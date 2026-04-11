@@ -1,37 +1,52 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*$py.class
 
-.ipynb_checkpoints/
-.DS_Store
-Thumbs.db
+# C extensions
+*.so
 
-.agent/
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Raw datasets: too large for GitHub, keep local/Drive only
-ieee-fraud-detection/*.csv
-archive/*.csv
+# Variables
+.data/
+data/
+*.csv
+*.parquet
+*.h5
+*.pkl
+*.model
 
-# Local environment files
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environments
 .env
-.venv/
+.venv
+env/
 venv/
+ENV/
+env.bak/
+venv.bak/
 
-# Local maintenance / scratch files not meant for the public repo
-*_BACKUP_*.ipynb
-apply_*.py
-patch_*.py
-fix_*.py
-check*.py
-verify_*.py
-cleanup_*.py
-deep_code_reviewer.py
-diff.txt
-refactor.py
-replace.js
-replace_proposal.py
-restructure.py
-restructure2.py
-shorten.py
-sort_tracker.py
-tracker_*.xlsx
-upgrade_*.py
+# IDEs
+.vscode/
+.idea/

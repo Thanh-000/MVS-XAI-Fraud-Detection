@@ -1,0 +1,96 @@
+# MVS-XAI Configuration — v4.3.4
+# Matches notebook 06_MVS_XAI_Ultimate_IEEE_CIS.ipynb
+
+dataset:
+  name: "IEEE-CIS Fraud Detection"
+  source: "https://www.kaggle.com/c/ieee-fraud-detection"
+  train_transactions: "data/train_transaction.csv"
+  train_identity: "data/train_identity.csv"
+
+feature_engineering:
+  uid_construction: "card1 + addr1 + D1_normalized"
+  d1_normalized: "D1n = floor(TransactionDT / 86400) - D1"
+  expanding_agg_columns: ["TransactionAmt", "D1", "D15", "C1", "C13", "C14"]
+  categorical_agg_columns: ["M4", "M5", "M6", "M9"]
+  v_pca_components: 3
+  cross_features: true
+  uid_post_processing:
+    blend_ratio: 0.7  # 70% individual + 30% UID mean
+
+cross_validation:
+  n_splits: 5
+  gap_size: 1000
+  strategy: "walk_forward"
+
+models:
+  random_forest:
+    n_estimators: 500
+    max_depth: 15
+    min_samples_leaf: 10
+
+  xgboost:
+    n_estimators: 800
+    learning_rate: 0.03
+    max_depth: 8
+    gamma: 2
+    reg_alpha: 0.5
+    reg_lambda: 2
+    early_stopping_rounds: 50
+
+  lightgbm:
+    n_estimators: 800
+    learning_rate: 0.03
+    max_depth: 8
+    num_leaves: 63
+    min_child_samples: 100
+
+  catboost:
+    iterations: 800
+    learning_rate: 0.03
+    depth: 8
+    early_stopping_rounds: 50
+
+  focal_mlp:
+    architecture: [256, 128, 64, 1]
+    focal_gamma: 2.0
+    focal_alpha: 0.75
+    epochs: 15
+    learning_rate: 0.001
+    batch_size: 4096
+    dropout: [0.3, 0.3, 0.2]
+
+  lstm:
+    hidden_size: 64
+    num_layers: 2
+    seq_len: 10
+    focal_gamma: 2.0
+    focal_alpha: 0.75
+    epochs: 12
+    learning_rate: 0.002
+    batch_size: 4096
+    dropout: 0.3
+
+meta_learner:
+  type: "LogisticRegression"
+  C: 0.01
+  penalty: "l2"
+  calibration: "platt"
+  calibration_cv: 3
+
+confidence_gating:
+  tau: 0.60
+  formula: "w = min(1.0, (AUC / tau)^2)"
+
+hitl:
+  auto_block_threshold: 0.60
+  review_threshold: 0.35
+  amount_percentile: 95
+  cold_start_txn_limit: 3
+
+drift_monitoring:
+  psi_bins: 10
+  psi_threshold_moderate: 0.10
+  psi_threshold_significant: 0.25
+
+xai:
+  levels: ["SHAP", "LIME", "DiCE", "Anchors", "LLM"]
