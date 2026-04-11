@@ -125,7 +125,7 @@ class DataLoader:
 
     @staticmethod
     def _reduce_mem_usage(df):
-        """Downcast numeric columns to reduce memory footprint."""
+        """Downcast numeric columns conservatively to reduce memory footprint."""
         start_mem = df.memory_usage().sum() / 1024**2
         for col in df.columns:
             col_type = df[col].dtype
@@ -143,10 +143,10 @@ class DataLoader:
                 elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
                     df[col] = df[col].astype(np.int32)
             else:
-                if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max:
-                    df[col] = df[col].astype(np.float16)
-                else:
-                    df[col] = df[col].astype(np.float32)
+                # Float16 is too fragile for IEEE-CIS scale and can overflow during
+                # casts or intermediate operations on Colab/NumPy. Float32 keeps the
+                # memory savings while avoiding noisy warnings and precision loss.
+                df[col] = df[col].astype(np.float32)
 
         end_mem = df.memory_usage().sum() / 1024**2
         reduction = (1 - end_mem / start_mem) * 100 if start_mem > 0 else 0
