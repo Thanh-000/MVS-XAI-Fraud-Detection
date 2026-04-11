@@ -90,7 +90,16 @@ def build_notebook():
     - direct HTTPS download links
     - Google Drive share links copied from Chrome
 
-    IEEE-CIS requires two links:
+    IEEE-CIS supports two modes:
+
+    - one bundle zip link via `IEEE_BUNDLE_URL`
+    - or two direct CSV links via `IEEE_TRANSACTION_URL` and `IEEE_IDENTITY_URL`
+
+    Preferred for Kaggle signed URLs:
+
+    - `IEEE_BUNDLE_URL`
+
+    Alternative CSV links:
 
     - `IEEE_TRANSACTION_URL`
     - `IEEE_IDENTITY_URL`
@@ -101,6 +110,7 @@ def build_notebook():
     """
 
     dataset_links_code = """
+    IEEE_BUNDLE_URL = ""
     IEEE_TRANSACTION_URL = ""
     IEEE_IDENTITY_URL = ""
     PAYSIM_URL = ""
@@ -108,6 +118,7 @@ def build_notebook():
 
     download_helper_code = """
     import os
+    import zipfile
     from pathlib import Path
     from urllib.parse import urlparse
     from urllib.request import urlretrieve
@@ -138,6 +149,15 @@ def build_notebook():
 
         print(f"Downloaded: {output_path} ({output_path.stat().st_size / 1024**2:.1f} MB)")
 
+    def extract_zip(zip_path, extract_dir):
+        zip_path = Path(zip_path)
+        extract_dir = Path(extract_dir)
+        if not zip_path.is_file():
+            raise FileNotFoundError(f"Zip file not found: {zip_path}")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_dir)
+        print(f"Extracted zip into: {extract_dir}")
+
     print(f"Runtime data directory: {DATA_DIR}")
     """
 
@@ -146,8 +166,13 @@ def build_notebook():
     """
 
     ieee_download_code = """
-    download_from_link(IEEE_TRANSACTION_URL, DATA_DIR / "train_transaction.csv")
-    download_from_link(IEEE_IDENTITY_URL, DATA_DIR / "train_identity.csv")
+    if str(IEEE_BUNDLE_URL).strip():
+        ieee_zip_path = DATA_DIR / "ieee-fraud-detection.zip"
+        download_from_link(IEEE_BUNDLE_URL, ieee_zip_path)
+        extract_zip(ieee_zip_path, DATA_DIR)
+    else:
+        download_from_link(IEEE_TRANSACTION_URL, DATA_DIR / "train_transaction.csv")
+        download_from_link(IEEE_IDENTITY_URL, DATA_DIR / "train_identity.csv")
     print(sorted(os.listdir(DATA_DIR)))
     """
 
