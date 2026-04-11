@@ -7,6 +7,7 @@ import shap
 import lime
 import lime.lime_tabular
 import dice_ml
+from alibi.explainers import AnchorTabular
 import google.generativeai as genai
 from sklearn.base import BaseEstimator
 import warnings
@@ -68,8 +69,6 @@ class UltimateXAIAuditor:
              
         # 4. ALIBI ANCHORS MODULE
         print("\n▶ [Level 4] Truy xuất ALIBI ANCHORS MAB FIREWALL...")
-        # Note: alibi integration might need AnchorTabular import which was present in my view_file but I'll make sure it's complete
-        from alibi.explainers import AnchorTabular
         anchor_explainer = AnchorTabular(predictor=lambda x: self.model.predict(x), feature_names=mapped_names)
         anchor_explainer.fit(X_test.iloc[:200].values)
         print("> Triển khai đồ thị: MAB Reinforcement Learning đã load thành công Map không gian luật (Q-States).")
