@@ -48,7 +48,7 @@ Evaluated on the **IEEE-CIS Fraud Detection** dataset (590,540 transactions, 3.5
                        ▼
 ┌──────────────────────────────────────────────────────────┐
 │  5-Level XAI Audit + HITL Routing + Drift Monitoring     │
-└──────────────────────────────────────────────────────────┐
+└──────────────────────────────────────────────────────────┘
 ```
 
 ## Project Structure
