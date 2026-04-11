@@ -85,7 +85,7 @@ def build_notebook():
     !python -m pip install --upgrade pip
     !pip install -r requirements.txt
     !pip install xgboost lightgbm catboost imbalanced-learn
-    !pip install shap lime dice-ml alibi google-generativeai anchor-exp
+    !pip install shap lime dice-ml alibi google-generativeai "anchor-exp>=0.0.2.0"
     """
 
     drive_data_md = """
