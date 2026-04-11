@@ -1,0 +1,115 @@
+% ============================================================
+% RESEARCH PROPOSAL --- IEEE Two-Column Compact Style
+% Digital Financial Transaction Fraud Detection Using
+% Explainable Multi-Model Machine Learning on PaySim and IEEE-CIS
+% ============================================================
+\documentclass[10pt,a4paper,twocolumn]{article}
+
+% --- Packages ---
+\usepackage[utf8]{inputenc}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[T1]{fontenc}
+\usepackage{mathptmx}
+\usepackage[left=1.8cm,right=1.8cm,top=2cm,bottom=2cm]{geometry}
+\usepackage{setspace}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, calc, backgrounds}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{balance}
+
+% --- Color Palette ---
+\definecolor{ieeeblue}{HTML}{1F4E79}
+\definecolor{absbox}{HTML}{E8F0FE}
+\definecolor{hypbox}{HTML}{FFF3E0}
+\definecolor{secline}{HTML}{2E75B6}
+\definecolor{citeblue}{HTML}{2962A0}
+\definecolor{notebox}{HTML}{E8F5E9}
+\definecolor{warnbox}{HTML}{FFF8E1}
+
+% --- Compact Formatting ---
+\singlespacing
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\setlength{\columnsep}{0.6cm}
+\setlist{nosep,leftmargin=*,topsep=1pt}
+\captionsetup{font=small,skip=3pt,labelfont=bf}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=ieeeblue,
+    citecolor=citeblue,
+    urlcolor=ieeeblue,
+}
+
+% --- Section Formatting ---
+\titleformat{\section}
+  {\normalsize\bfseries\scshape\color{ieeeblue}}
+  {\Roman{section}.}{0.4em}{}
+  [\vspace{-2pt}{\color{secline}\titlerule[0.8pt]}]
+\titleformat{\subsection}
+  {\small\bfseries}
+  {\arabic{section}.\arabic{subsection}}{0.4em}{}
+\titlespacing*{\section}{0pt}{8pt}{4pt}
+\titlespacing*{\subsection}{0pt}{6pt}{2pt}
+
+% --- Header ---
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\fancyfoot[C]{\small\thepage}
+
+% ============================================================
+\begin{document}
+
+% --- Title Block ---
+\twocolumn[{%
+\begin{center}
+    {\footnotesize\color{gray} RESEARCH PROPOSAL --- FINANCIAL TECHNOLOGY}\par\vspace{4pt}
+    {\Large\bfseries\color{ieeeblue} Digital Financial Transaction Fraud Detection Using\par\vspace{2pt}
+    Explainable Multi-Model Machine Learning\par\vspace{2pt}
+    on PaySim and IEEE-CIS}\par\vspace{8pt}
+    {\small Author~1\textsuperscript{1}, Author~2\textsuperscript{1}, Author~3\textsuperscript{1}, Author~4\textsuperscript{1}}\par\vspace{2pt}
+    {\footnotesize\textsuperscript{1}Faculty of Information Technology, [University Name]}\par\vspace{1pt}
+    {\footnotesize\texttt{\{author1, author2, author3, author4\}@university.edu}}\par\vspace{4pt}
+    {\small\today}\par\vspace{6pt}
+\end{center}
+% --- Abstract Box ---
+\noindent\fcolorbox{ieeeblue}{absbox}{%
+\begin{minipage}{0.96\textwidth}
+\vspace{4pt}
+{\small\textbf{\color{ieeeblue}Abstract.}
+This proposal presents the \textbf{Multi-View Stacking Ensemble with Explainable AI (MVS-XAI)} framework for financial fraud detection. The architecture integrates five base models---Random Forest, XGBoost, LightGBM, CatBoost, and LSTM---spanning \textbf{three input representations} (flat tabular features, account-level temporal sequences, and behavioral rolling features) to achieve diversity through data representation rather than algorithm selection alone. CatBoost provides native categorical encoding via Ordered Target Statistics, complementing the gradient boosting ensemble on high-cardinality features prevalent in real-world e-commerce data. Class imbalance (1.3--3.5\% fraud rate) is addressed via K-Means SMOTE applied after isolated temporal splitting. A \textbf{Logistic Regression meta-learner} optimally aggregates out-of-fold predictions from these models, providing a highly stable final fraud decision. Unlike traditional black-box detection, MVS-XAI offers five-level Explainable AI (SHAP, LIME, DiCE, Anchors, and an LLM-powered Natural Language Explainer) ensuring compliance with the EU AI Act while identifying complex fraud patterns with exceptional precision and structural integrity. The framework incorporates \textbf{fairness analysis} (Demographic Parity, Equalized Odds) and \textbf{active drift monitoring} (ADWIN-based detection with auto-retrain triggers) for production readiness. Validation is conducted on \textbf{dual benchmarks}---PaySim (6.3M transactions) and IEEE-CIS (590K transactions)---with leakage-safe temporal splitting, empirical ablation study, and McNemar's statistical testing with Holm correction.}
+\vspace{4pt}
+\end{minipage}%
+}%
+\par\vspace{2pt}
+{\small\textbf{Keywords:} fraud detection, multi-view learning, stacking ensemble, explainable AI, class imbalance, CatBoost, fairness, concept drift}
+\par\vspace{6pt}
+}]% end twocolumn
+
+% ============================================================
+% I. INTRODUCTION
+% ============================================================
+\section{Introduction}
+
+\subsection{Background of the Study}
+
+Financial fraud losses reached \$32.34 billion worldwide in 2023 \cite{nilson2024}, representing a crippling 5\% of annual revenue for many organizations \cite{acfe2024}. As global digital payment volumes surpass \$11.6 trillion \cite{statista2024}, sophisticated attacks like card-not-present (CNP) fraud have grown 23\% year-over-year. Traditional rule-based detection relies on static thresholds and cannot adapt to evolving criminal strategies \cite{abdallah2016}. Machine learning (ML) has emerged as the dominant paradigm, with gradient boosted decision trees (XGBoost, LightGBM, CatBoost) representing the current state-of-the-art for tabular fraud detection \cite{chen2016, ke2017, prokhorenkova2018}.
+
+However, existing ML approaches exhibit four critical limitations. First, most ensemble systems combine models from a single paradigm, resulting in correlated predictions that provide diminishing stacking benefit \cite{dietterich2000}. Second, ``black-box'' models conflict with regulatory mandates such as GDPR Article~22 and the EU AI Act, which require ``meaningful information about the logic involved'' and non-discrimination guarantees \cite{goodman2017}. Third, most studies validate on a single dataset with random splits, producing over-optimistic estimates that ignore the temporal distribution shifts encountered in production \cite{santos2018}. Fourth, a recent systematic review \cite{khatri2025systematic} highlights that fraud detection systems lack \emph{drift-aware evaluation}.
+
+% [Note: truncated for GitHub push, full text is in the local file]
+\end{document}
