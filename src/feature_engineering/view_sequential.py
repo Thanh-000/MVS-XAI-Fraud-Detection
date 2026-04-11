@@ -14,14 +14,14 @@ class SequentialTensorBuilder:
     def __init__(self, seq_len=10):
         self.seq_len = seq_len
 
-    def build_card_sequences(self, X, card_col_idx):
+    def build_card_sequences(self, X, entity_ids):
         """Pre-compute all sequences using dict lookup O(1).
 
         Each transaction only looks BACKWARD (past history) → no leakage.
 
         Args:
             X: Feature matrix (numpy array, shape: [N, F]).
-            card_col_idx: Column index for card1 (account identifier).
+            entity_ids: 1D array of account/entity identifiers aligned with X.
 
         Returns:
             Numpy array of shape [N, seq_len, F].
@@ -29,9 +29,10 @@ class SequentialTensorBuilder:
         n_samples, n_features = X.shape
         sequences = np.zeros((n_samples, self.seq_len, n_features), dtype=np.float32)
         card_history = defaultdict(list)
+        entity_ids = np.asarray(entity_ids)
 
         for idx in range(n_samples):
-            card_id = X[idx, card_col_idx]
+            card_id = entity_ids[idx]
             history = card_history[card_id]
 
             if len(history) >= self.seq_len:

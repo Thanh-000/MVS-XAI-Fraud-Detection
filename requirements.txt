@@ -22,10 +22,15 @@ imbalanced-learn>=0.10
 shap>=0.42
 lime>=0.2
 dice-ml>=0.10
+anchor-exp>=0.0.2.10
 
 # Visualization
 matplotlib>=3.6
 seaborn>=0.12
+
+# Notebook reproducibility
+nbformat>=5.8
+nbclient>=0.8
 
 # Configuration
 pyyaml>=6.0

@@ -13,8 +13,9 @@ class TabularFeatureExtractor:
     @staticmethod
     def extract_time_features(df):
         """Derive hour, day_of_week, is_night, is_weekend from TransactionDT."""
-        df['hour'] = (df['TransactionDT'] % 86400) // 3600
-        df['day_of_week'] = (df['TransactionDT'] // 86400) % 7
+        transaction_dt = df['TransactionDT'].astype(np.int64)
+        df['hour'] = (transaction_dt % 86400) // 3600
+        df['day_of_week'] = (transaction_dt // 86400) % 7
         df['is_night'] = ((df['hour'] >= 22) | (df['hour'] <= 5)).astype(int)
         df['is_weekend'] = (df['day_of_week'] >= 5).astype(int)
         print("  View 1 (Tabular): hour, day_of_week, is_night, is_weekend")

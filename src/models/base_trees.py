@@ -10,8 +10,15 @@ All 4 tree models use the EXACT same hyperparameters as the research notebook:
 Imbalance handling: SMOTE+CTGAN (external), NOT native class weights.
 """
 from sklearn.ensemble import RandomForestClassifier
-from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
+try:
+    from xgboost import XGBClassifier
+except ImportError:
+    XGBClassifier = None
+
+try:
+    from lightgbm import LGBMClassifier
+except ImportError:
+    LGBMClassifier = None
 
 try:
     from catboost import CatBoostClassifier
@@ -41,6 +48,8 @@ class TreeEnsembleFactory:
         """XGBoost: 800 rounds, lr=0.03, depth=8, early_stopping=50.
         GPU-accelerated via hist tree method.
         """
+        if XGBClassifier is None:
+            raise ImportError("XGBoost not installed: pip install xgboost")
         params = dict(
             n_estimators=800,
             learning_rate=0.03,
@@ -64,6 +73,8 @@ class TreeEnsembleFactory:
         """LightGBM: 800 rounds, lr=0.03, depth=8, num_leaves=63.
         Early stopping handled via lgb.early_stopping callback during fit().
         """
+        if LGBMClassifier is None:
+            raise ImportError("LightGBM not installed: pip install lightgbm")
         return LGBMClassifier(
             n_estimators=800,
             learning_rate=0.03,

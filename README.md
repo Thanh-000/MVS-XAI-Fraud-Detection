@@ -12,7 +12,16 @@ MVS-XAI is a research-grade framework for **digital financial transaction fraud 
 - **Explainable AI (XAI)**: 5-level explainability framework (SHAP → LIME → DiCE → Anchors → LLM) for transparency and regulatory compliance.
 - **Human-in-the-Loop (HITL)**: 3-tier routing system (AUTO_BLOCK / HITL_REVIEW / ALLOW) for operational deployment.
 
-Evaluated on the **IEEE-CIS Fraud Detection** dataset (590,540 transactions, 3.5% fraud rate, 6,381 competing teams on Kaggle 2019).
+Evaluated on the **IEEE-CIS Fraud Detection** dataset (590,540 transactions, 3.5% fraud rate, 6,381 competing teams on Kaggle 2019), with the training pipeline now also supporting **PaySim** through a dataset-adapter path.
+
+## Current Submission Scope
+
+- The main training entry point now supports `--dataset ieee` and `--dataset paysim`.
+- The reviewer notebook artifact in this repo is still **IEEE-focused**.
+- **ULB Credit Card Fraud** is still not packaged in this repository.
+- The main notebook is designed to be **submission-safe**:
+  - If IEEE-CIS CSVs are available under `data/`, it can be rerun on the real dataset.
+  - If the CSVs are absent, the committed notebook still executes a synthetic smoke-test so reviewers can see metrics, plots, XAI output, and HITL routing rather than an empty notebook.
 
 ## Architecture
 
@@ -121,7 +130,13 @@ pip install -r requirements.txt
 
 ## Dataset Setup
 
-Download the IEEE-CIS Fraud Detection dataset from [Kaggle](https://www.kaggle.com/c/ieee-fraud-detection/data):
+Download the supported datasets into `data/`.
+
+IEEE-CIS Fraud Detection from Kaggle:
+
+- Competition page: `https://www.kaggle.com/c/ieee-fraud-detection`
+- Data page: `https://www.kaggle.com/c/ieee-fraud-detection/data`
+- Note: Kaggle API download works only after the competition terms have been accepted on the website.
 
 ```bash
 # Using Kaggle API
@@ -133,6 +148,13 @@ Expected files in `data/`:
 - `train_transaction.csv` (590,540 × 394)
 - `train_identity.csv` (144,233 × 41)
 
+PaySim:
+
+- Place one CSV under `data/` with one of these filenames:
+- `paysim.csv`
+- `PS_20174392719_1491204439457_log.csv`
+- `paysim_log.csv`
+
 ## Quick Start
 
 ```python
@@ -142,8 +164,8 @@ from src.models.base_trees import TreeEnsembleFactory
 from src.ensembler.meta_learner import MetaEnsembler
 
 # 1. Load & engineer features
-df = DataLoader.load_and_merge('data/')
-df = UIDFeatureEngineer.apply_all(df)
+df = DataLoader.load_dataset('data/', dataset='ieee')
+df = UIDFeatureEngineer.apply_all(df, dataset_name='ieee')
 
 # 2. Train base models
 xgb = TreeEnsembleFactory.get_xgboost()
@@ -155,7 +177,55 @@ meta.fit(oof_matrix, y_train)
 probas = meta.predict_proba(test_matrix)
 ```
 
-For the complete research pipeline, see the [main notebook](../notebooks/06_MVS_XAI_Ultimate_IEEE_CIS.ipynb).
+Reviewer notebooks:
+
+- Colab setup helper: [notebooks/00_Colab_Quickstart.ipynb](notebooks/00_Colab_Quickstart.ipynb)
+- IEEE-focused artifact: [notebooks/06_MVS_XAI_Ultimate_IEEE_CIS.ipynb](notebooks/06_MVS_XAI_Ultimate_IEEE_CIS.ipynb)
+- PaySim-focused artifact: [notebooks/07_MVS_XAI_PaySim.ipynb](notebooks/07_MVS_XAI_PaySim.ipynb)
+
+The Colab quickstart notebook supports both setup paths:
+
+- clone the repo directly from GitHub
+- load IEEE-CIS from Google Drive
+- copy PaySim directly from Google Drive into `data/`
+
+If you need clean artifacts for submission review, regenerate the notebooks after adding the datasets:
+
+```bash
+py -3.9 scripts/generate_submission_notebook.py
+py -3.9 scripts/generate_paysim_submission_notebook.py
+```
+
+The generated notebook already includes markdown that explains the current experimental scope, the IEEE-CIS-only implementation status, and the planned PaySim/ULB extension so the limitations are explicit to reviewers.
+
+To run the full training pipeline:
+
+```bash
+# IEEE-CIS
+python main_train_pipeline.py --dataset ieee --data_dir data --device cuda
+
+# PaySim
+python main_train_pipeline.py --dataset paysim --data_dir data --device cuda
+```
+
+The training pipeline now performs:
+
+- temporal holdout split first
+- walk-forward CV only on the training slice
+- meta-learner fit on training OOF predictions
+- final base-model refit with an internal validation slice
+- separate holdout evaluation, drift audit, fairness audit, HITL routing, and meta-level XAI
+
+Useful runtime controls:
+
+```bash
+python main_train_pipeline.py --dataset paysim --data_dir data --device cpu --test_ratio 0.2 --n_splits 5 --gap_size 1000
+```
+
+Generated holdout predictions are saved under `artifacts/`, for example:
+
+- `artifacts/ieee_holdout_predictions.csv`
+- `artifacts/paysim_holdout_predictions.csv`
 
 ## Key Hyperparameters
 

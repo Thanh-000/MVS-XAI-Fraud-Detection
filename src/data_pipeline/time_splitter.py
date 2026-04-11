@@ -42,7 +42,7 @@ class TemporalSplitter:
             train_idx = np.arange(0, train_end)
             val_idx = np.arange(val_start, val_end)
 
-            print(f"    Fold {fold_i+1}: train[:{train_end}] → gap({self.gap_size}) → val[{val_start}:{val_end}]")
+            print(f"    Fold {fold_i+1}: train[:{train_end}] -> gap({self.gap_size}) -> val[{val_start}:{val_end}]")
             yield train_idx, val_idx
 
     def split_holdout(self, X, test_ratio=0.15):
@@ -60,5 +60,5 @@ class TemporalSplitter:
         train_idx = np.arange(0, test_start_raw)
         test_idx = np.arange(test_start, n)
 
-        print(f"  Holdout: train[:{test_start_raw}] → gap({self.gap_size}) → test[{test_start}:{n}]")
+        print(f"  Holdout: train[:{test_start_raw}] -> gap({self.gap_size}) -> test[{test_start}:{n}]")
         return train_idx, test_idx

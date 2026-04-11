@@ -66,7 +66,7 @@ class UIDFeatureEngineer:
 
         n_unique = df['UID'].nunique()
         n_total = len(df)
-        print(f"  UID Construction: card1 + addr1 + D1n → {n_unique:,} unique clients "
+        print(f"  UID Construction: card1 + addr1 + D1n -> {n_unique:,} unique clients "
               f"({n_unique/n_total*100:.1f}% granularity)")
         return df
 
@@ -166,7 +166,7 @@ class UIDFeatureEngineer:
 
         # Drop original V-columns to reduce noise
         df.drop(columns=v_cols, inplace=True, errors='ignore')
-        print(f"  V-PCA: {len(v_cols)} V-columns → {n_pca_features} PCA components "
+        print(f"  V-PCA: {len(v_cols)} V-columns -> {n_pca_features} PCA components "
               f"({len(pattern_groups)} groups)")
         return df
 
@@ -182,7 +182,7 @@ class UIDFeatureEngineer:
             df['Amt_x_Hour'] = df['TransactionAmt'] * df['hour']
             df['Amt_x_isWeekend'] = df['TransactionAmt'] * df.get('is_weekend', 0)
             df['Amt_x_isNight'] = df['TransactionAmt'] * df.get('is_night', 0)
-            print(f"  Cross-features: Amt×Hour, Amt×Weekend, Amt×Night")
+            print("  Cross-features: Amt*Hour, Amt*Weekend, Amt*Night")
         return df
 
     @staticmethod
@@ -196,15 +196,19 @@ class UIDFeatureEngineer:
         return df
 
     @classmethod
-    def apply_all(cls, df):
+    def apply_all(cls, df, dataset_name='ieee'):
         """Apply all Kaggle Winner feature engineering steps sequentially.
 
         Pipeline: build_uid → uid_aggregations → d_diffs (in agg) →
                   v_pca → cross_features → new_client_flag
         """
         print("=" * 60)
-        print("  Kaggle Winner Feature Engineering (v4.3.4)")
-        print("  Source: Chris Deotte / FraudSquad / NVIDIA Developer")
+        if dataset_name.lower() == 'ieee':
+            print("  Kaggle Winner Feature Engineering (v4.3.4)")
+            print("  Source: Chris Deotte / FraudSquad / NVIDIA Developer")
+        else:
+            print(f"  Canonical Feature Engineering for {dataset_name.upper()} (v4.3.4)")
+            print("  Reuses the common UID/aggregation stack on dataset-adapted columns")
         print("=" * 60)
 
         df = cls.build_uid(df)
