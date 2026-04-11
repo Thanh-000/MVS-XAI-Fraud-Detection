@@ -188,7 +188,7 @@ The Colab quickstart notebook supports both setup paths:
 - clone the repo directly from GitHub
 - paste direct dataset links or Google Drive share links
 - use a single IEEE-CIS bundle zip link or separate transaction/identity CSV links
-- download IEEE-CIS and PaySim into the Colab runtime `data/` folder
+- download IEEE-CIS and PaySim into the Colab runtime `data/` folder with `aria2` for direct links
 
 If you need clean artifacts for submission review, regenerate the notebooks after adding the datasets:
 

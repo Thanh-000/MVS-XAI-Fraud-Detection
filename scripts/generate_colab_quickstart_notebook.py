@@ -70,10 +70,15 @@ def build_notebook():
     install_md = """
     ## 2. Install Dependencies
 
-    The extra installs cover optional tree-model and XAI packages used by the repo, plus `gdown` so Google Drive share links can be downloaded directly.
+    The extra installs cover optional tree-model and XAI packages used by the repo, plus:
+
+    - `aria2` for faster direct-link downloads
+    - `gdown` for Google Drive share links
     """
 
     install_code = """
+    !apt-get -qq update
+    !apt-get -qq install -y aria2
     !python -m pip install --upgrade pip
     !pip install -r requirements.txt
     !pip install xgboost lightgbm catboost imbalanced-learn
@@ -118,10 +123,10 @@ def build_notebook():
 
     download_helper_code = """
     import os
+    import subprocess
     import zipfile
     from pathlib import Path
     from urllib.parse import urlparse
-    from urllib.request import urlretrieve
 
     import gdown
 
@@ -142,7 +147,21 @@ def build_notebook():
         if "drive.google.com" in parsed.netloc:
             gdown.download(url, str(output_path), quiet=False, fuzzy=True)
         else:
-            urlretrieve(url, str(output_path))
+            subprocess.run(
+                [
+                    "aria2c",
+                    "--dir",
+                    str(output_path.parent),
+                    "--out",
+                    output_path.name,
+                    "--max-connection-per-server=16",
+                    "--split=16",
+                    "--min-split-size=1M",
+                    "--file-allocation=none",
+                    url,
+                ],
+                check=True,
+            )
 
         if not output_path.exists() or output_path.stat().st_size == 0:
             raise RuntimeError(f"Download failed for {output_path}")
