@@ -19,22 +19,16 @@ def build_notebook():
 
     It covers:
 
-    - mounting Google Drive
     - cloning the repository directly from GitHub
     - installing dependencies
-    - reading IEEE-CIS directly from the mounted Google Drive path
-    - reading PaySim directly from the mounted Google Drive path
+    - downloading IEEE-CIS and PaySim from pasted links
+    - accepting direct HTTPS links or Google Drive share links
     - running the full train pipeline for IEEE-CIS and PaySim
     - regenerating the reviewer notebooks
 
     Practical note:
 
-    - This notebook is intentionally not committed with outputs because several cells require interactive Colab actions such as Drive mount.
-    """
-
-    mount_code = """
-    from google.colab import drive
-    drive.mount('/content/drive')
+    - This notebook is intentionally not committed with outputs because several cells require user-provided download links and a live Colab runtime.
     """
 
     repo_config_md = """
@@ -43,7 +37,7 @@ def build_notebook():
     This quickstart assumes:
 
     - the repo is cloned directly from GitHub
-    - the datasets are already stored somewhere under `MyDrive`
+    - datasets are downloaded into the runtime from pasted links
 
     Set the GitHub URL and branch if needed, then run the clone cell.
     """
@@ -56,11 +50,9 @@ def build_notebook():
 
     repo_clone_md = """
     ### 1A. Clone Repo From GitHub
-
-    Use this path when the repository is hosted remotely and you want a fresh runtime copy.
     """
 
-    repo_clone_shell = """
+    repo_clone_code = """
     import os
     import shutil
     import subprocess
@@ -78,39 +70,106 @@ def build_notebook():
     install_md = """
     ## 2. Install Dependencies
 
-    The extra installs cover optional tree-model and XAI packages that some repo snapshots import at module load time.
+    The extra installs cover optional tree-model and XAI packages used by the repo, plus `gdown` so Google Drive share links can be downloaded directly.
     """
 
     install_code = """
     !python -m pip install --upgrade pip
     !pip install -r requirements.txt
     !pip install xgboost lightgbm catboost imbalanced-learn
-    !pip install shap lime dice-ml alibi google-generativeai "anchor-exp>=0.0.2.0"
+    !pip install shap lime dice-ml alibi google-generativeai "anchor-exp>=0.0.2.0" gdown
     """
 
-    drive_data_md = """
-    ## 3. Dataset Paths On Mounted Drive
+    dataset_links_md = """
+    ## 3. Dataset Download Links
 
-    This notebook reads the datasets directly from `MyDrive` after mount.
+    Paste your links below.
 
-    Requirements:
+    Supported formats:
 
-    - `IEEE_DRIVE_DATA_DIR` must contain `train_transaction.csv` and `train_identity.csv`
-    - `PAYSIM_DRIVE_DATA_DIR` must contain one of:
-      - `paysim.csv`
-      - `PS_20174392719_1491204439457_log.csv`
-      - `paysim_log.csv`
+    - direct HTTPS download links
+    - Google Drive share links copied from Chrome
+
+    IEEE-CIS requires two links:
+
+    - `IEEE_TRANSACTION_URL`
+    - `IEEE_IDENTITY_URL`
+
+    PaySim requires one link:
+
+    - `PAYSIM_URL`
     """
 
-    drive_data_code = """
-    IEEE_DRIVE_DATA_DIR = "/content/drive/MyDrive/MVS_XAI_Data/ieee-fraud-detection"
-    PAYSIM_DRIVE_DATA_DIR = "/content/drive/MyDrive/MVS_XAI_Data/paysim"
+    dataset_links_code = """
+    IEEE_TRANSACTION_URL = ""
+    IEEE_IDENTITY_URL = ""
+    PAYSIM_URL = ""
+    """
+
+    download_helper_code = """
+    import os
+    from pathlib import Path
+    from urllib.parse import urlparse
+    from urllib.request import urlretrieve
+
+    import gdown
+
+    DATA_DIR = Path(RUNTIME_REPO_PATH) / "data"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    def download_from_link(url, output_path):
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not str(url).strip():
+            raise ValueError(f"Missing URL for {output_path.name}")
+
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError(f"URL must start with http/https: {url}")
+
+        if "drive.google.com" in parsed.netloc:
+            gdown.download(url, str(output_path), quiet=False, fuzzy=True)
+        else:
+            urlretrieve(url, str(output_path))
+
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            raise RuntimeError(f"Download failed for {output_path}")
+
+        print(f"Downloaded: {output_path} ({output_path.stat().st_size / 1024**2:.1f} MB)")
+
+    print(f"Runtime data directory: {DATA_DIR}")
+    """
+
+    ieee_download_md = """
+    ### 3A. Download IEEE-CIS
+    """
+
+    ieee_download_code = """
+    download_from_link(IEEE_TRANSACTION_URL, DATA_DIR / "train_transaction.csv")
+    download_from_link(IEEE_IDENTITY_URL, DATA_DIR / "train_identity.csv")
+    print(sorted(os.listdir(DATA_DIR)))
+    """
+
+    paysim_download_md = """
+    ### 3B. Download PaySim
+
+    The downloaded file is normalized to `data/paysim.csv` for the training pipeline.
+    """
+
+    paysim_download_code = """
+    download_from_link(PAYSIM_URL, DATA_DIR / "paysim.csv")
+    print(sorted(os.listdir(DATA_DIR)))
+    """
+
+    dataset_validate_md = """
+    ## 4. Validate Downloaded Files
     """
 
     ieee_validate_code = """
     from pathlib import Path
 
-    ieee_dir = Path(IEEE_DRIVE_DATA_DIR)
+    ieee_dir = Path(DATA_DIR)
 
     if not (ieee_dir / "train_transaction.csv").is_file():
         raise FileNotFoundError(f"Missing train_transaction.csv in {ieee_dir}")
@@ -124,7 +183,7 @@ def build_notebook():
     paysim_validate_code = """
     from pathlib import Path
 
-    paysim_dir = Path(PAYSIM_DRIVE_DATA_DIR)
+    paysim_dir = Path(DATA_DIR)
 
     paysim_candidates = [
         paysim_dir / "paysim.csv",
@@ -178,7 +237,7 @@ def build_notebook():
             "--dataset",
             "ieee",
             "--data_dir",
-            IEEE_DRIVE_DATA_DIR,
+            str(DATA_DIR),
             "--device",
             "cuda",
         ]
@@ -193,7 +252,7 @@ def build_notebook():
             "--dataset",
             "paysim",
             "--data_dir",
-            PAYSIM_DRIVE_DATA_DIR,
+            str(DATA_DIR),
             "--device",
             "cuda",
         ]
@@ -203,7 +262,7 @@ def build_notebook():
     regenerate_md = """
     ## 6. Regenerate Reviewer Notebooks
 
-    These commands rebuild the two reviewer-facing notebook artifacts using the currently configured Drive dataset paths.
+    These commands rebuild the two reviewer-facing notebook artifacts using the downloaded files under `data/`.
     """
 
     regenerate_code = """
@@ -211,45 +270,63 @@ def build_notebook():
     import subprocess
 
     env = os.environ.copy()
-    env["MVS_XAI_IEEE_DATA_DIR"] = IEEE_DRIVE_DATA_DIR
-    env["MVS_XAI_PAYSIM_DATA_DIR"] = PAYSIM_DRIVE_DATA_DIR
+    env["MVS_XAI_IEEE_DATA_DIR"] = str(DATA_DIR)
+    env["MVS_XAI_PAYSIM_DATA_DIR"] = str(DATA_DIR)
 
     subprocess.run(["python", "scripts/generate_submission_notebook.py"], check=True, env=env)
     subprocess.run(["python", "scripts/generate_paysim_submission_notebook.py"], check=True, env=env)
     print(sorted(os.listdir("notebooks")))
     """
 
-    save_back_md = """
-    ## 7. Copy Results Back To Drive
+    export_md = """
+    ## 7. Export Results
 
-    This copies the updated repo, notebooks, and artifacts back into Drive.
+    This bundles notebooks and artifacts into a zip and downloads it to your browser.
     """
 
-    save_back_code = """
-    !rsync -a --delete /content/MVS_XAI/ /content/drive/MyDrive/MVS_XAI/
+    export_code = """
+    import shutil
+    from google.colab import files
+
+    bundle_root = Path(RUNTIME_REPO_PATH) / "colab_export"
+    shutil.rmtree(bundle_root, ignore_errors=True)
+    bundle_root.mkdir(parents=True, exist_ok=True)
+
+    for folder_name in ["notebooks", "artifacts"]:
+        source = Path(RUNTIME_REPO_PATH) / folder_name
+        if source.exists():
+            shutil.copytree(source, bundle_root / folder_name)
+
+    archive_path = shutil.make_archive(str(bundle_root), "zip", root_dir=bundle_root)
+    files.download(archive_path)
     """
 
     troubleshooting_md = """
     ## Troubleshooting
 
-    - If dataset setup fails, check `IEEE_DRIVE_DATA_DIR` and `PAYSIM_DRIVE_DATA_DIR`.
-    - If tree packages fail to install, rerun the install cell once.
+    - If a download fails, check whether the pasted URL is a real downloadable link and not an expired browser session link.
+    - For Google Drive links, make sure sharing permissions allow download access.
     - If CUDA is unavailable, change `--device cuda` to `--device cpu`.
-    - Holdout predictions are saved under `artifacts/`.
+    - If full IEEE-CIS kills the Colab runtime, reduce the model set or split count before rerunning.
     """
 
     notebook = new_notebook(
         cells=[
             new_markdown_cell(textwrap.dedent(intro_md).strip()),
-            new_code_cell(textwrap.dedent(mount_code).strip()),
             new_markdown_cell(textwrap.dedent(repo_config_md).strip()),
             new_code_cell(textwrap.dedent(repo_config_code).strip()),
             new_markdown_cell(textwrap.dedent(repo_clone_md).strip()),
-            new_code_cell(textwrap.dedent(repo_clone_shell).strip()),
+            new_code_cell(textwrap.dedent(repo_clone_code).strip()),
             new_markdown_cell(textwrap.dedent(install_md).strip()),
             new_code_cell(textwrap.dedent(install_code).strip()),
-            new_markdown_cell(textwrap.dedent(drive_data_md).strip()),
-            new_code_cell(textwrap.dedent(drive_data_code).strip()),
+            new_markdown_cell(textwrap.dedent(dataset_links_md).strip()),
+            new_code_cell(textwrap.dedent(dataset_links_code).strip()),
+            new_code_cell(textwrap.dedent(download_helper_code).strip()),
+            new_markdown_cell(textwrap.dedent(ieee_download_md).strip()),
+            new_code_cell(textwrap.dedent(ieee_download_code).strip()),
+            new_markdown_cell(textwrap.dedent(paysim_download_md).strip()),
+            new_code_cell(textwrap.dedent(paysim_download_code).strip()),
+            new_markdown_cell(textwrap.dedent(dataset_validate_md).strip()),
             new_code_cell(textwrap.dedent(ieee_validate_code).strip()),
             new_code_cell(textwrap.dedent(paysim_validate_code).strip()),
             new_code_cell(textwrap.dedent(runner_code).strip()),
@@ -258,8 +335,8 @@ def build_notebook():
             new_code_cell(textwrap.dedent(run_paysim_code).strip()),
             new_markdown_cell(textwrap.dedent(regenerate_md).strip()),
             new_code_cell(textwrap.dedent(regenerate_code).strip()),
-            new_markdown_cell(textwrap.dedent(save_back_md).strip()),
-            new_code_cell(textwrap.dedent(save_back_code).strip()),
+            new_markdown_cell(textwrap.dedent(export_md).strip()),
+            new_code_cell(textwrap.dedent(export_code).strip()),
             new_markdown_cell(textwrap.dedent(troubleshooting_md).strip()),
         ],
         metadata={

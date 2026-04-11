@@ -186,8 +186,8 @@ Reviewer notebooks:
 The Colab quickstart notebook supports both setup paths:
 
 - clone the repo directly from GitHub
-- load IEEE-CIS from Google Drive
-- copy PaySim directly from Google Drive into `data/`
+- paste direct dataset links or Google Drive share links
+- download IEEE-CIS and PaySim into the Colab runtime `data/` folder
 
 If you need clean artifacts for submission review, regenerate the notebooks after adding the datasets:
 
