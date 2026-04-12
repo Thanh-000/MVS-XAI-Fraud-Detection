@@ -74,6 +74,7 @@ def build_notebook():
 
     - `aria2` for faster direct-link downloads
     - `gdown` for Google Drive share links
+    - best-effort `cupy` installation so XGBoost GPU prediction can stay on-device when the Colab CUDA wheel is available
     """
 
     install_code = """
@@ -83,6 +84,21 @@ def build_notebook():
     !pip install -r requirements.txt
     !pip install xgboost lightgbm catboost imbalanced-learn
     !pip install shap lime dice-ml alibi google-generativeai "anchor-exp>=0.0.2.0" gdown
+
+    import subprocess
+    import sys
+
+    def install_best_effort_cupy():
+        for wheel in ["cupy-cuda12x", "cupy-cuda11x"]:
+            print(f"Trying optional CuPy wheel: {wheel}")
+            result = subprocess.run([sys.executable, "-m", "pip", "install", wheel], check=False)
+            if result.returncode == 0:
+                print(f"Installed optional CuPy package: {wheel}")
+                return wheel
+        print("CuPy wheel not installed; pipeline will keep the CPU fallback path for XGBoost prediction.")
+        return None
+
+    OPTIONAL_CUPY_WHEEL = install_best_effort_cupy()
     """
 
     dataset_links_md = """
@@ -352,6 +368,7 @@ def build_notebook():
     - If a download fails, check whether the pasted URL is a real downloadable link and not an expired browser session link.
     - For Google Drive links, make sure sharing permissions allow download access.
     - If CUDA is unavailable, change `--device cuda` to `--device cpu`.
+    - If the optional CuPy install fails, the notebook can still run; only the XGBoost GPU prediction warning mitigation will be unavailable.
     - If full IEEE-CIS kills the Colab runtime, reduce the model set or split count before rerunning.
     """
 
