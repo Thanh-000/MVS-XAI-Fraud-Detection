@@ -125,15 +125,21 @@ def build_notebook():
     - `IEEE_TRANSACTION_URL`
     - `IEEE_IDENTITY_URL`
 
-    PaySim requires one link:
+    PaySim supports two modes:
 
-    - `PAYSIM_URL`
+    - one bundle zip link via `PAYSIM_BUNDLE_URL`
+    - or one direct CSV link via `PAYSIM_URL`
+
+    Preferred for Kaggle signed URLs:
+
+    - `PAYSIM_BUNDLE_URL`
     """
 
     dataset_links_code = """
     IEEE_BUNDLE_URL = ""
     IEEE_TRANSACTION_URL = ""
     IEEE_IDENTITY_URL = ""
+    PAYSIM_BUNDLE_URL = ""
     PAYSIM_URL = ""
     """
 
@@ -149,6 +155,11 @@ def build_notebook():
 
     DATA_DIR = Path(RUNTIME_REPO_PATH) / "data"
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PAYSIM_CSV_CANDIDATES = [
+        "paysim.csv",
+        "PS_20174392719_1491204439457_log.csv",
+        "paysim_log.csv",
+    ]
 
     def download_from_link(url, output_path):
         output_path = Path(output_path)
@@ -194,6 +205,46 @@ def build_notebook():
             zf.extractall(extract_dir)
         print(f"Extracted zip into: {extract_dir}")
 
+    def find_first_existing(paths):
+        return next((path for path in paths if path.exists()), None)
+
+    def resolve_paysim_csv(search_root):
+        search_root = Path(search_root)
+
+        direct_candidates = [search_root / name for name in PAYSIM_CSV_CANDIDATES]
+        direct_match = find_first_existing(direct_candidates)
+        if direct_match is not None:
+            return direct_match
+
+        recursive_matches = []
+        for name in PAYSIM_CSV_CANDIDATES:
+            recursive_matches.extend(search_root.rglob(name))
+
+        if recursive_matches:
+            recursive_matches = sorted(set(recursive_matches), key=lambda p: (len(p.parts), str(p)))
+            return recursive_matches[0]
+
+        return None
+
+    def normalize_paysim_csv(search_root, target_path):
+        target_path = Path(target_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        match = resolve_paysim_csv(search_root)
+        if match is None:
+            raise FileNotFoundError(
+                f"No supported PaySim CSV found under {Path(search_root)}. "
+                f"Expected one of: {', '.join(PAYSIM_CSV_CANDIDATES)}"
+            )
+
+        if match.resolve() != target_path.resolve():
+            shutil.copy2(match, target_path)
+            print(f"Normalized PaySim CSV: {match} -> {target_path}")
+        else:
+            print(f"PaySim CSV already normalized at: {target_path}")
+
+        return target_path
+
     print(f"Runtime data directory: {DATA_DIR}")
     """
 
@@ -216,10 +267,19 @@ def build_notebook():
     ### 3B. Download PaySim
 
     The downloaded file is normalized to `data/paysim.csv` for the training pipeline.
+
+    For Kaggle bundle links, the notebook downloads the zip as `archive (1).zip`,
+    extracts it, then searches recursively for the real PaySim CSV and normalizes it.
     """
 
     paysim_download_code = """
-    download_from_link(PAYSIM_URL, DATA_DIR / "paysim.csv")
+    if str(PAYSIM_BUNDLE_URL).strip():
+        paysim_zip_path = DATA_DIR / "archive (1).zip"
+        download_from_link(PAYSIM_BUNDLE_URL, paysim_zip_path)
+        extract_zip(paysim_zip_path, DATA_DIR)
+        normalize_paysim_csv(DATA_DIR, DATA_DIR / "paysim.csv")
+    else:
+        download_from_link(PAYSIM_URL, DATA_DIR / "paysim.csv")
     print(sorted(os.listdir(DATA_DIR)))
     """
 
