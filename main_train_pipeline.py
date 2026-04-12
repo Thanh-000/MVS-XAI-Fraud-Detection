@@ -104,6 +104,21 @@ def ensure_feature_frame(X, feature_names):
     return pd.DataFrame(X, columns=feature_names)
 
 
+def prepare_xgb_device_input(X, device_type):
+    """Move XGBoost inputs onto the booster device when CuPy is available."""
+    if device_type != "cuda":
+        return X
+
+    try:
+        import cupy as cp
+    except ImportError:
+        return X
+
+    if isinstance(X, pd.DataFrame):
+        return cp.asarray(X.to_numpy(dtype=np.float32))
+    return cp.asarray(np.asarray(X, dtype=np.float32))
+
+
 def fit_tree_model(model_name, X_train, y_train, X_val, y_val, device_type, seed, feature_names):
     builders = {
         "RF": lambda: TreeEnsembleFactory.get_random_forest(seed=seed),
@@ -114,13 +129,19 @@ def fit_tree_model(model_name, X_train, y_train, X_val, y_val, device_type, seed
     model = builders[model_name]()
     X_train_frame = ensure_feature_frame(X_train, feature_names)
     X_val_frame = None if X_val is None else ensure_feature_frame(X_val, feature_names)
-    if model_name == "RF" or X_val is None or y_val is None:
-        model.fit(X_train_frame, y_train)
+    if model_name == "XGB":
+        X_train_fit = prepare_xgb_device_input(X_train_frame, device_type)
+        X_val_fit = None if X_val_frame is None else prepare_xgb_device_input(X_val_frame, device_type)
     else:
-        model.fit(X_train_frame, y_train, eval_set=[(X_val_frame, y_val)])
+        X_train_fit = X_train_frame
+        X_val_fit = X_val_frame
+    if model_name == "RF" or X_val is None or y_val is None:
+        model.fit(X_train_fit, y_train)
+    else:
+        model.fit(X_train_fit, y_train, eval_set=[(X_val_fit, y_val)])
     if X_val is None:
         return model, None
-    return model, model.predict_proba(X_val_frame)[:, 1]
+    return model, model.predict_proba(X_val_fit)[:, 1]
 
 
 def build_sequence_train_val(X_train_scaled, X_val_scaled, entity_train, entity_val, seq_len=10):
@@ -312,10 +333,11 @@ def benchmark_decision_latency(
 
         for model_name in active_models:
             if model_name in {"RF", "XGB", "LGB", "CAT"}:
+                tree_input = ensure_feature_frame(x_tree, feature_names)
+                if model_name == "XGB":
+                    tree_input = prepare_xgb_device_input(tree_input, device.type)
                 per_model_scores[model_name] = float(
-                    final_models[model_name].predict_proba(
-                        ensure_feature_frame(x_tree, feature_names)
-                    )[0, 1]
+                    final_models[model_name].predict_proba(tree_input)[0, 1]
                 )
             elif model_name == "MLP":
                 per_model_scores[model_name] = float(predict_mlp(final_models["MLP"], x_mlp, device, batch_size=1)[0])
@@ -516,9 +538,10 @@ def run_single_seed(
             feature_names=feature_cols,
         )
         final_models[model_name] = final_model
-        holdout_base_predictions[model_name] = final_model.predict_proba(
-            ensure_feature_frame(X_holdout, feature_cols)
-        )[:, 1]
+        holdout_tree_input = ensure_feature_frame(X_holdout, feature_cols)
+        if model_name == "XGB":
+            holdout_tree_input = prepare_xgb_device_input(holdout_tree_input, device.type)
+        holdout_base_predictions[model_name] = final_model.predict_proba(holdout_tree_input)[:, 1]
 
     if "MLP" in active_models:
         _, mlp_model = train_mlp_focal(
