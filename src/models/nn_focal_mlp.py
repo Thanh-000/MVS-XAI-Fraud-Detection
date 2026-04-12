@@ -7,11 +7,11 @@ Architecture: Linear(256)→ReLU→Dropout(0.3)→Linear(128)→ReLU→Dropout(0
 Loss: Focal Loss (γ=2.0, α=0.75)
 Training: Full epochs + best-state tracking (NO early stopping).
 """
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
-import numpy as np
 
 
 class FocalLoss(nn.Module):
@@ -49,7 +49,7 @@ class BehavioralMLP(nn.Module):
         return self.net(x)
 
 
-def train_mlp_focal(X_trn, y_trn, X_val, y_val, device, epochs=15, lr=0.001, batch_size=4096):
+def train_mlp_focal(X_trn, y_trn, X_val, y_val, device, epochs=15, lr=0.001, batch_size=4096, seed=42):
     """Train Behavioral MLP with Focal Loss.
 
     Strategy (v4.3.2): Train ALL epochs, restore best-epoch model.
@@ -68,6 +68,11 @@ def train_mlp_focal(X_trn, y_trn, X_val, y_val, device, epochs=15, lr=0.001, bat
     Returns:
         Tuple of (validation predictions, trained model).
     """
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+
     n_features = X_trn.shape[1]
     model = BehavioralMLP(n_features).to(device)
     criterion = FocalLoss(alpha=0.75, gamma=2.0)
@@ -77,7 +82,9 @@ def train_mlp_focal(X_trn, y_trn, X_val, y_val, device, epochs=15, lr=0.001, bat
         torch.tensor(X_trn, dtype=torch.float32),
         torch.tensor(y_trn, dtype=torch.float32)
     )
-    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, generator=generator)
 
     val_t = torch.tensor(X_val, dtype=torch.float32)
     val_y_t = torch.tensor(y_val, dtype=torch.float32)

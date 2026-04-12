@@ -123,6 +123,7 @@ def build_notebook():
 
     download_helper_code = """
     import os
+    import shutil
     import subprocess
     import zipfile
     from pathlib import Path

@@ -17,6 +17,8 @@ catboost>=1.2
 
 # Imbalanced Learning
 imbalanced-learn>=0.10
+sdv>=1.10
+river>=0.21
 
 # XAI
 shap>=0.42

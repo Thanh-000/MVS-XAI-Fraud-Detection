@@ -37,6 +37,20 @@ class ModelEvaluator:
         print(classification_report(self.y_true, y_pred,
               target_names=['Legitimate', 'Fraud']))
 
+    def compute_metrics(self, y_pred_proba, threshold=0.5):
+        """Return standard binary-fraud metrics in dictionary form."""
+        y_pred = (y_pred_proba >= threshold).astype(int)
+        roc_auc = roc_auc_score(self.y_true, y_pred_proba)
+        pr_auc = average_precision_score(self.y_true, y_pred_proba)
+        f1 = f1_score(self.y_true, y_pred)
+        return {
+            "roc_auc": float(roc_auc),
+            "pr_auc": float(pr_auc),
+            "f1": float(f1),
+            "threshold": float(threshold),
+            "y_pred": y_pred,
+        }
+
     def find_optimal_threshold(self, y_pred_proba):
         """Find threshold that maximizes F1-score using precision-recall curve.
 

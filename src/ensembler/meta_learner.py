@@ -10,13 +10,13 @@ from sklearn.metrics import roc_auc_score
 class MetaEnsembler:
     """L2 Logistic Regression meta-learner with Platt calibration."""
 
-    def __init__(self, C=0.01, cv_cal=3):
+    def __init__(self, C=0.01, cv_cal=3, seed=42):
         self.base_lr = LogisticRegression(
             C=C,
             penalty="l2",
             solver="lbfgs",
             max_iter=300,
-            random_state=42,
+            random_state=seed,
         )
         self.cv_cal = cv_cal
         self.calibrated_model = None

@@ -30,7 +30,7 @@ class TreeEnsembleFactory:
     """Factory for creating tree-based ensemble models with research-grade hyperparameters."""
 
     @staticmethod
-    def get_random_forest():
+    def get_random_forest(seed=42):
         """RandomForest: 500 trees, max_depth=15.
         No native class weights — imbalance handled by SMOTE+CTGAN externally.
         """
@@ -40,11 +40,11 @@ class TreeEnsembleFactory:
             min_samples_leaf=10,
             class_weight=None,   # SMOTE handles imbalance
             n_jobs=-1,
-            random_state=42
+            random_state=seed
         )
 
     @staticmethod
-    def get_xgboost(use_gpu=True):
+    def get_xgboost(use_gpu=True, seed=42):
         """XGBoost: 800 rounds, lr=0.03, depth=8, early_stopping=50.
         GPU-accelerated via hist tree method.
         """
@@ -62,14 +62,14 @@ class TreeEnsembleFactory:
             early_stopping_rounds=50,
             subsample=0.8,
             colsample_bytree=0.7,
-            random_state=42
+            random_state=seed
         )
         if use_gpu:
             params['device'] = 'cuda'
         return XGBClassifier(**params)
 
     @staticmethod
-    def get_lightgbm():
+    def get_lightgbm(seed=42):
         """LightGBM: 800 rounds, lr=0.03, depth=8, num_leaves=63.
         Early stopping handled via lgb.early_stopping callback during fit().
         """
@@ -85,12 +85,12 @@ class TreeEnsembleFactory:
             subsample=0.8,
             colsample_bytree=0.7,
             n_jobs=-1,
-            random_state=42,
+            random_state=seed,
             verbose=-1
         )
 
     @staticmethod
-    def get_catboost(use_gpu=True):
+    def get_catboost(use_gpu=True, seed=42):
         """CatBoost: 800 iterations, lr=0.03, depth=8, early_stopping=50."""
         if CatBoostClassifier is None:
             raise ImportError("CatBoost not installed: pip install catboost")
@@ -101,7 +101,7 @@ class TreeEnsembleFactory:
             auto_class_weights=None,  # REMOVED — SMOTE handles imbalance
             early_stopping_rounds=50,
             verbose=0,
-            random_state=42
+            random_state=seed
         )
         if use_gpu:
             params['task_type'] = 'GPU'

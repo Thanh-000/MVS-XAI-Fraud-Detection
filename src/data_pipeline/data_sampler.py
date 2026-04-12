@@ -59,7 +59,7 @@ class DataBalanceEngine:
         return X_res, y_res
 
     def apply_ctgan_synthesis(self, df_train, target_col='isFraud',
-                              num_synthetic_samples=10000, epochs=30):
+                              num_synthetic_samples=10000, epochs=30, use_gpu=True):
         """Generate synthetic fraud samples using CTGAN.
 
         Args:
@@ -85,10 +85,13 @@ class DataBalanceEngine:
                 metadata.update_column(column_name=col_name, sdtype='numerical')
 
         synthesizer = CTGANSynthesizer(
-            metadata, epochs=epochs, verbose=True, cuda=True
+            metadata, epochs=epochs, verbose=True, cuda=use_gpu
         )
         synthesizer.fit(fraud_data)
         synthetic_data = synthesizer.sample(num_rows=num_synthetic_samples)
+
+        if target_col not in synthetic_data.columns:
+            synthetic_data[target_col] = 1
 
         augmented_df = pd.concat([df_train, synthetic_data], axis=0).sample(
             frac=1.0, random_state=self.random_state

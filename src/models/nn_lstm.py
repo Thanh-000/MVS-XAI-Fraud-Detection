@@ -7,11 +7,11 @@ Architecture: LSTM(in_f, 64, num_layers=2, dropout=0.3)
 Loss: Focal Loss (γ=2.0, α=0.75)
 Training: Full epochs + best-state tracking (NO early stopping).
 """
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
-import numpy as np
 
 
 class FocalLoss(nn.Module):
@@ -51,7 +51,7 @@ class LSTMFraud(nn.Module):
 
 
 def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
-                    epochs=12, lr=0.002, batch_size=4096):
+                    epochs=12, lr=0.002, batch_size=4096, seed=42):
     """Train LSTM with Focal Loss for one CV fold.
 
     Strategy (v4.3.2): Train ALL epochs, restore best-epoch model.
@@ -71,6 +71,11 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
     Returns:
         Tuple of (validation predictions, trained model).
     """
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+
     model = LSTMFraud(n_features).to(device)
     criterion = FocalLoss(alpha=0.75, gamma=2.0)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -79,7 +84,9 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
         torch.tensor(X_seq_trn, dtype=torch.float32),
         torch.tensor(y_trn, dtype=torch.float32)
     )
-    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, generator=generator)
 
     val_t = torch.tensor(X_seq_val, dtype=torch.float32)
     val_y_t = torch.tensor(y_val, dtype=torch.float32)
