@@ -97,7 +97,14 @@ def get_active_model_names(device_type, seed):
     return active
 
 
-def fit_tree_model(model_name, X_train, y_train, X_val, y_val, device_type, seed):
+def ensure_feature_frame(X, feature_names):
+    """Keep tree-model inputs aligned with training feature names."""
+    if isinstance(X, pd.DataFrame):
+        return X.loc[:, feature_names]
+    return pd.DataFrame(X, columns=feature_names)
+
+
+def fit_tree_model(model_name, X_train, y_train, X_val, y_val, device_type, seed, feature_names):
     builders = {
         "RF": lambda: TreeEnsembleFactory.get_random_forest(seed=seed),
         "XGB": lambda: TreeEnsembleFactory.get_xgboost(use_gpu=(device_type == "cuda"), seed=seed),
@@ -105,13 +112,15 @@ def fit_tree_model(model_name, X_train, y_train, X_val, y_val, device_type, seed
         "CAT": lambda: TreeEnsembleFactory.get_catboost(use_gpu=(device_type == "cuda"), seed=seed),
     }
     model = builders[model_name]()
+    X_train_frame = ensure_feature_frame(X_train, feature_names)
+    X_val_frame = None if X_val is None else ensure_feature_frame(X_val, feature_names)
     if model_name == "RF" or X_val is None or y_val is None:
-        model.fit(X_train, y_train)
+        model.fit(X_train_frame, y_train)
     else:
-        model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
+        model.fit(X_train_frame, y_train, eval_set=[(X_val_frame, y_val)])
     if X_val is None:
         return model, None
-    return model, model.predict_proba(X_val)[:, 1]
+    return model, model.predict_proba(X_val_frame)[:, 1]
 
 
 def build_sequence_train_val(X_train_scaled, X_val_scaled, entity_train, entity_val, seq_len=10):
@@ -277,7 +286,15 @@ def save_holdout_artifacts(dataset, holdout_frame, fraud_scores, decisions):
     print(f"\n  Saved holdout predictions to: {output_path.resolve()}")
 
 
-def benchmark_decision_latency(final_models, active_models, holdout_payload, gate_weights, meta_model, device):
+def benchmark_decision_latency(
+    final_models,
+    active_models,
+    holdout_payload,
+    gate_weights,
+    meta_model,
+    device,
+    feature_names,
+):
     """Measure single-transaction decision latency after feature extraction."""
     import torch
 
@@ -295,7 +312,11 @@ def benchmark_decision_latency(final_models, active_models, holdout_payload, gat
 
         for model_name in active_models:
             if model_name in {"RF", "XGB", "LGB", "CAT"}:
-                per_model_scores[model_name] = float(final_models[model_name].predict_proba(x_tree)[0, 1])
+                per_model_scores[model_name] = float(
+                    final_models[model_name].predict_proba(
+                        ensure_feature_frame(x_tree, feature_names)
+                    )[0, 1]
+                )
             elif model_name == "MLP":
                 per_model_scores[model_name] = float(predict_mlp(final_models["MLP"], x_mlp, device, batch_size=1)[0])
             elif model_name == "LSTM":
@@ -405,6 +426,7 @@ def run_single_seed(
                 y_val,
                 device.type,
                 seed=seed + fold_i,
+                feature_names=feature_cols,
             )
             oof_train_predictions[model_name][fold_val_idx] = preds
 
@@ -446,10 +468,10 @@ def run_single_seed(
     print(f"\n  Train OOF matrix shape: {train_oof_matrix.shape}")
 
     meta = MetaEnsembler(C=0.01, seed=seed)
-    meta.fit(train_oof_matrix, y_train_all)
+    meta.fit(train_oof_matrix, y_train_all, feature_names=active_models)
     meta_train_result = meta.evaluate(train_oof_matrix, y_train_all)
     meta_raw = MetaEnsembler(C=0.01, seed=seed)
-    meta_raw.fit(raw_train_oof_matrix, y_train_all)
+    meta_raw.fit(raw_train_oof_matrix, y_train_all, feature_names=active_models)
     meta_raw_train_result = meta_raw.evaluate(raw_train_oof_matrix, y_train_all)
 
     print_section("PHASE 3.5: Final Base-Model Fit and Holdout Prediction")
@@ -491,9 +513,12 @@ def run_single_seed(
             y_final_val,
             device.type,
             seed=seed,
+            feature_names=feature_cols,
         )
         final_models[model_name] = final_model
-        holdout_base_predictions[model_name] = final_model.predict_proba(X_holdout)[:, 1]
+        holdout_base_predictions[model_name] = final_model.predict_proba(
+            ensure_feature_frame(X_holdout, feature_cols)
+        )[:, 1]
 
     if "MLP" in active_models:
         _, mlp_model = train_mlp_focal(
@@ -623,6 +648,7 @@ def run_single_seed(
         gate_weights=gate_weights,
         meta_model=meta,
         device=device,
+        feature_names=feature_cols,
     )
 
     save_holdout_artifacts(

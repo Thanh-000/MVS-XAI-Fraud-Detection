@@ -2,6 +2,7 @@
 Meta-learner: Logistic Regression (L2) + Platt calibration.
 """
 import numpy as np
+import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
@@ -20,16 +21,18 @@ class MetaEnsembler:
         )
         self.cv_cal = cv_cal
         self.calibrated_model = None
+        self.feature_names = None
 
-    def fit(self, oof_matrix, y_true):
-        self.base_lr.fit(oof_matrix, y_true)
+    def fit(self, oof_matrix, y_true, feature_names=None):
+        X_frame = self._ensure_frame(oof_matrix, feature_names=feature_names)
+        self.base_lr.fit(X_frame, y_true)
 
         self.calibrated_model = CalibratedClassifierCV(
             estimator=self.base_lr,
             cv=self.cv_cal,
             method="sigmoid",
         )
-        self.calibrated_model.fit(oof_matrix, y_true)
+        self.calibrated_model.fit(X_frame, y_true)
 
         coefs = self.base_lr.coef_[0]
         print(f"\n  Meta-Learner Weights: {np.round(coefs, 4)}")
@@ -37,7 +40,8 @@ class MetaEnsembler:
         return self
 
     def predict_proba(self, X):
-        return self.calibrated_model.predict_proba(X)[:, 1]
+        X_frame = self._ensure_frame(X)
+        return self.calibrated_model.predict_proba(X_frame)[:, 1]
 
     def evaluate(self, X, y_true):
         proba = self.predict_proba(X)
@@ -62,3 +66,17 @@ class MetaEnsembler:
             bin_conf = y_pred[mask].mean()
             ece += mask.sum() / len(y_true) * abs(bin_acc - bin_conf)
         return ece
+
+    def _ensure_frame(self, X, feature_names=None):
+        if isinstance(X, pd.DataFrame):
+            cols = list(X.columns)
+            if self.feature_names is None:
+                self.feature_names = cols
+            return X.loc[:, self.feature_names]
+
+        if feature_names is not None:
+            self.feature_names = list(feature_names)
+        elif self.feature_names is None:
+            self.feature_names = [f"model_{i}" for i in range(np.asarray(X).shape[1])]
+
+        return pd.DataFrame(X, columns=self.feature_names)

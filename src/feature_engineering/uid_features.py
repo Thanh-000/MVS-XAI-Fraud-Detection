@@ -124,7 +124,7 @@ class UIDFeatureEngineer:
             df[f'{d_col}_uid_mean'] = g.transform(lambda x: x.expanding().mean())
             df[f'{d_col}_uid_std'] = g.transform(lambda x: x.expanding().std()).fillna(0)
             df[f'{d_col}_uid_diff'] = g.diff().fillna(0)
-            df[f'{d_col}_uid_pct'] = g.pct_change().replace(
+            df[f'{d_col}_uid_pct'] = g.pct_change(fill_method=None).replace(
                 [np.inf, -np.inf], 0
             ).fillna(0)
         print(f"    D-columns: D1, D15 per-UID mean/std/diff/pct_change")
