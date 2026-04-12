@@ -71,7 +71,13 @@ class XAIEvaluationHarness:
 
     @staticmethod
     def anchor_precision(results):
-        return float(getattr(results, "precision", np.nan))
+        precision = getattr(results, "precision", np.nan)
+        if callable(precision):
+            precision = precision()
+        try:
+            return float(precision)
+        except (TypeError, ValueError):
+            return float("nan")
 
     @staticmethod
     def narrative_completeness(summary):
