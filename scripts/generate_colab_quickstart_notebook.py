@@ -111,19 +111,13 @@ def build_notebook():
     - direct HTTPS download links
     - Google Drive share links copied from Chrome
 
-    IEEE-CIS supports two modes:
+    IEEE-CIS uses one mode only:
 
     - one bundle zip link via `IEEE_BUNDLE_URL`
-    - or two direct CSV links via `IEEE_TRANSACTION_URL` and `IEEE_IDENTITY_URL`
 
     Preferred for Kaggle signed URLs:
 
     - `IEEE_BUNDLE_URL`
-
-    Alternative CSV links:
-
-    - `IEEE_TRANSACTION_URL`
-    - `IEEE_IDENTITY_URL`
 
     PaySim supports two modes:
 
@@ -137,8 +131,6 @@ def build_notebook():
 
     dataset_links_code = """
     IEEE_BUNDLE_URL = ""
-    IEEE_TRANSACTION_URL = ""
-    IEEE_IDENTITY_URL = ""
     PAYSIM_BUNDLE_URL = ""
     PAYSIM_URL = ""
     """
@@ -250,16 +242,19 @@ def build_notebook():
 
     ieee_download_md = """
     ### 3A. Download IEEE-CIS
+
+    The quickstart only supports the Kaggle bundle path for IEEE-CIS.
+    After extraction, the pipeline will use `train_transaction.csv` and
+    `train_identity.csv` from the bundle.
     """
 
     ieee_download_code = """
-    if str(IEEE_BUNDLE_URL).strip():
-        ieee_zip_path = DATA_DIR / "ieee-fraud-detection.zip"
-        download_from_link(IEEE_BUNDLE_URL, ieee_zip_path)
-        extract_zip(ieee_zip_path, DATA_DIR)
-    else:
-        download_from_link(IEEE_TRANSACTION_URL, DATA_DIR / "train_transaction.csv")
-        download_from_link(IEEE_IDENTITY_URL, DATA_DIR / "train_identity.csv")
+    if not str(IEEE_BUNDLE_URL).strip():
+        raise ValueError("Set IEEE_BUNDLE_URL to the Kaggle IEEE-CIS bundle link before running this cell.")
+
+    ieee_zip_path = DATA_DIR / "ieee-fraud-detection.zip"
+    download_from_link(IEEE_BUNDLE_URL, ieee_zip_path)
+    extract_zip(ieee_zip_path, DATA_DIR)
     print(sorted(os.listdir(DATA_DIR)))
     """
 
@@ -427,6 +422,7 @@ def build_notebook():
 
     - If a download fails, check whether the pasted URL is a real downloadable link and not an expired browser session link.
     - For Google Drive links, make sure sharing permissions allow download access.
+    - IEEE-CIS Kaggle `test` is not used by the research pipeline because it does not include `isFraud` labels. The repo evaluates on temporal holdouts carved from the labeled `train` split instead.
     - If CUDA is unavailable, change `--device cuda` to `--device cpu`.
     - If the optional CuPy install fails, the notebook can still run; only the XGBoost GPU prediction warning mitigation will be unavailable.
     - If full IEEE-CIS kills the Colab runtime, reduce the model set or split count before rerunning.
