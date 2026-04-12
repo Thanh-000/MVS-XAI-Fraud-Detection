@@ -316,9 +316,17 @@ def build_notebook():
 
     runner_code = """
     import os
+    import re
     import subprocess
+    from pathlib import Path
 
-    def run_and_stream(cmd, env=None):
+    def run_and_stream(cmd, env=None, log_path=None):
+        log_file = None
+        if log_path is not None:
+            log_path = Path(log_path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = log_path.open("w", encoding="utf-8")
+
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -328,11 +336,17 @@ def build_notebook():
             env=env,
         )
         assert process.stdout is not None
-        for line in process.stdout:
-            print(line, end="")
-        return_code = process.wait()
-        if return_code != 0:
-            raise RuntimeError(f"Command failed with exit code {return_code}: {' '.join(cmd)}")
+        try:
+            for line in process.stdout:
+                print(line, end="")
+                if log_file is not None:
+                    log_file.write(line)
+            return_code = process.wait()
+            if return_code != 0:
+                raise RuntimeError(f"Command failed with exit code {return_code}: {' '.join(cmd)}")
+        finally:
+            if log_file is not None:
+                log_file.close()
 
     print("Streaming helper ready.")
     """
@@ -356,7 +370,8 @@ def build_notebook():
             str(DATA_DIR),
             "--device",
             "cuda",
-        ]
+        ],
+        log_path=Path(RUNTIME_REPO_PATH) / "artifacts" / "ieee_train.log",
     )
     """
 
@@ -371,12 +386,79 @@ def build_notebook():
             str(DATA_DIR),
             "--device",
             "cuda",
-        ]
+        ],
+        log_path=Path(RUNTIME_REPO_PATH) / "artifacts" / "paysim_train.log",
     )
     """
 
+    results_md = """
+    ## 6. Review Results
+
+    These cells summarize the latest run directly from saved artifacts and logs.
+    Run the dataset-specific cell after the corresponding training cell completes.
+    """
+
+    results_helper_code = """
+    import pandas as pd
+    from pathlib import Path
+
+    ARTIFACTS_DIR = Path(RUNTIME_REPO_PATH) / "artifacts"
+
+    def _last_match(pattern, text):
+        matches = re.findall(pattern, text, flags=re.MULTILINE)
+        return matches[-1] if matches else None
+
+    def show_run_results(dataset):
+        dataset = dataset.lower().strip()
+        pred_path = ARTIFACTS_DIR / f"{dataset}_holdout_predictions.csv"
+        log_path = ARTIFACTS_DIR / f"{dataset}_train.log"
+
+        if not pred_path.is_file():
+            raise FileNotFoundError(f"Missing prediction artifact: {pred_path}")
+
+        df_pred = pd.read_csv(pred_path)
+        print(f"Prediction artifact: {pred_path}")
+        print(f"Rows: {len(df_pred):,}")
+        print(f"Columns: {list(df_pred.columns)}")
+
+        if "decision" in df_pred.columns:
+            print("\\nDecision counts:")
+            print(df_pred["decision"].value_counts(dropna=False).to_string())
+
+        if log_path.is_file():
+            log_text = log_path.read_text(encoding="utf-8", errors="ignore")
+            metric_patterns = {
+                "Optimal threshold": r"Optimal F1 Threshold: ([0-9.]+)",
+                "ROC-AUC": r"ROC-AUC:\\s+([0-9.]+)",
+                "PR-AUC": r"PR-AUC:\\s+([0-9.]+)",
+                "F1-Score": r"F1-Score:\\s+([0-9.]+)",
+                "Score PSI": r"Score PSI: ([0-9.]+)",
+                "TPR Disparity": r"TPR Disparity: ([0-9.]+%)",
+                "Latency": r"Median single-transaction decision latency: ([0-9.]+ ms)",
+            }
+
+            print("\\nParsed log summary:")
+            for label, pattern in metric_patterns.items():
+                value = _last_match(pattern, log_text)
+                if value is not None:
+                    print(f"- {label}: {value}")
+        else:
+            print(f"No log file found at {log_path}")
+
+        print("\\nTop rows:")
+        display(df_pred.head(10))
+    """
+
+    ieee_results_code = """
+    show_run_results("ieee")
+    """
+
+    paysim_results_code = """
+    show_run_results("paysim")
+    """
+
     regenerate_md = """
-    ## 6. Regenerate Reviewer Notebooks
+    ## 7. Regenerate Reviewer Notebooks
 
     These commands rebuild the two reviewer-facing notebook artifacts using the downloaded files under `data/`.
     """
@@ -395,7 +477,7 @@ def build_notebook():
     """
 
     export_md = """
-    ## 7. Export Results
+    ## 8. Export Results
 
     This bundles notebooks and artifacts into a zip and downloads it to your browser.
     """
@@ -451,6 +533,10 @@ def build_notebook():
             new_markdown_cell(textwrap.dedent(run_md).strip()),
             new_code_cell(textwrap.dedent(run_ieee_code).strip()),
             new_code_cell(textwrap.dedent(run_paysim_code).strip()),
+            new_markdown_cell(textwrap.dedent(results_md).strip()),
+            new_code_cell(textwrap.dedent(results_helper_code).strip()),
+            new_code_cell(textwrap.dedent(ieee_results_code).strip()),
+            new_code_cell(textwrap.dedent(paysim_results_code).strip()),
             new_markdown_cell(textwrap.dedent(regenerate_md).strip()),
             new_code_cell(textwrap.dedent(regenerate_code).strip()),
             new_markdown_cell(textwrap.dedent(export_md).strip()),
