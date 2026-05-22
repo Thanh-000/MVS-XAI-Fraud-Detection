@@ -558,6 +558,340 @@ def artifact_review_code(dataset: str) -> str:
     """
 
 
+def academic_evaluation_code(dataset: str) -> str:
+    return f"""
+    import math
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    from IPython.display import display
+    from sklearn.metrics import (
+        average_precision_score,
+        brier_score_loss,
+        confusion_matrix,
+        f1_score,
+        precision_recall_curve,
+        precision_score,
+        recall_score,
+        roc_auc_score,
+    )
+
+    ACADEMIC_EVAL_DIR = ARTIFACTS_DIR / "academic_evaluation"
+    ACADEMIC_EVAL_DIR.mkdir(parents=True, exist_ok=True)
+
+    def parse_seed(path: Path) -> int:
+        parent = path.parent.name
+        if parent.startswith("seed_"):
+            try:
+                return int(parent.replace("seed_", ""))
+            except ValueError:
+                pass
+        return -1
+
+    def optimal_f1_threshold(y_true, scores):
+        precision, recall, thresholds = precision_recall_curve(y_true, scores)
+        f1_values = 2 * precision * recall / np.maximum(precision + recall, 1e-12)
+        best_idx = int(np.nanargmax(f1_values))
+        if best_idx >= len(thresholds):
+            threshold = 1.0
+        else:
+            threshold = float(thresholds[best_idx])
+        return {{
+            "threshold": threshold,
+            "precision": float(precision[best_idx]),
+            "recall": float(recall[best_idx]),
+            "f1": float(f1_values[best_idx]),
+        }}
+
+    def ece_score(y_true, scores, n_bins=10):
+        bins = np.linspace(0.0, 1.0, n_bins + 1)
+        ece = 0.0
+        rows = []
+        for bin_id in range(n_bins):
+            left, right = bins[bin_id], bins[bin_id + 1]
+            if bin_id == n_bins - 1:
+                mask = (scores >= left) & (scores <= right)
+            else:
+                mask = (scores >= left) & (scores < right)
+            n = int(mask.sum())
+            if n == 0:
+                rows.append({{
+                    "bin": bin_id,
+                    "score_min": left,
+                    "score_max": right,
+                    "n": 0,
+                    "mean_score": np.nan,
+                    "fraud_rate": np.nan,
+                    "abs_gap": np.nan,
+                }})
+                continue
+            mean_score = float(scores[mask].mean())
+            fraud_rate = float(y_true[mask].mean())
+            abs_gap = abs(mean_score - fraud_rate)
+            ece += (n / len(scores)) * abs_gap
+            rows.append({{
+                "bin": bin_id,
+                "score_min": left,
+                "score_max": right,
+                "n": n,
+                "mean_score": mean_score,
+                "fraud_rate": fraud_rate,
+                "abs_gap": float(abs_gap),
+            }})
+        return float(ece), rows
+
+    def topk_capture_table(frame, percentages=(0.001, 0.005, 0.01, 0.02, 0.05, 0.10)):
+        ranked = frame.sort_values("fraud_score", ascending=False).reset_index(drop=True)
+        total_fraud = max(int(ranked["isFraud"].sum()), 1)
+        base_rate = float(ranked["isFraud"].mean())
+        rows = []
+        for pct in percentages:
+            n_top = max(1, int(math.ceil(len(ranked) * pct)))
+            top = ranked.iloc[:n_top]
+            precision = float(top["isFraud"].mean())
+            recall = float(top["isFraud"].sum() / total_fraud)
+            lift = float(precision / base_rate) if base_rate > 0 else float("nan")
+            rows.append({{
+                "top_percent": pct * 100,
+                "n_reviewed": n_top,
+                "fraud_captured": int(top["isFraud"].sum()),
+                "precision": precision,
+                "recall": recall,
+                "lift": lift,
+            }})
+        return rows
+
+    def decision_policy_metrics(frame):
+        y_true = frame["isFraud"].astype(int).to_numpy()
+        policies = {{
+            "auto_block_only": frame["decision"].eq("AUTO_BLOCK").to_numpy(),
+            "auto_block_or_hitl": frame["decision"].isin(["AUTO_BLOCK", "HITL_REVIEW"]).to_numpy(),
+        }}
+        rows = []
+        for policy_name, pred_bool in policies.items():
+            pred = pred_bool.astype(int)
+            tn, fp, fn, tp = confusion_matrix(y_true, pred, labels=[0, 1]).ravel()
+            rows.append({{
+                "policy": policy_name,
+                "tp": int(tp),
+                "fp": int(fp),
+                "tn": int(tn),
+                "fn": int(fn),
+                "precision": float(precision_score(y_true, pred, zero_division=0)),
+                "recall": float(recall_score(y_true, pred, zero_division=0)),
+                "f1": float(f1_score(y_true, pred, zero_division=0)),
+                "review_or_block_rate": float(pred.mean()),
+            }})
+        return rows
+
+    def score_quantile_bins(frame, n_bins=10):
+        ranked = frame.copy()
+        ranked["score_decile"] = pd.qcut(
+            ranked["fraud_score"].rank(method="first"),
+            q=n_bins,
+            labels=False,
+            duplicates="drop",
+        )
+        grouped = (
+            ranked.groupby("score_decile", observed=True)
+            .agg(
+                n=("isFraud", "size"),
+                fraud_n=("isFraud", "sum"),
+                fraud_rate=("isFraud", "mean"),
+                mean_score=("fraud_score", "mean"),
+                min_score=("fraud_score", "min"),
+                max_score=("fraud_score", "max"),
+            )
+            .reset_index()
+            .sort_values("score_decile", ascending=False)
+        )
+        return grouped
+
+    prediction_files = sorted(ARTIFACTS_DIR.rglob("{dataset}_holdout_predictions.csv"))
+    if not prediction_files:
+        raise FileNotFoundError(f"No holdout prediction files found under {{ARTIFACTS_DIR}}")
+
+    seed_rows = []
+    topk_rows = []
+    policy_rows = []
+    decision_rows = []
+    calibration_rows = []
+    score_bin_frames = []
+    frames_by_seed = {{}}
+
+    for prediction_path in prediction_files:
+        seed = parse_seed(prediction_path)
+        frame = pd.read_csv(prediction_path)
+        frame["isFraud"] = frame["isFraud"].astype(int)
+        y_true = frame["isFraud"].to_numpy()
+        scores = frame["fraud_score"].astype(float).to_numpy()
+        frames_by_seed[seed] = frame
+
+        opt = optimal_f1_threshold(y_true, scores)
+        ece, cal_rows = ece_score(y_true, scores, n_bins=10)
+        pred_opt = (scores >= opt["threshold"]).astype(int)
+        tn, fp, fn, tp = confusion_matrix(y_true, pred_opt, labels=[0, 1]).ravel()
+
+        seed_rows.append({{
+            "seed": seed,
+            "n_holdout": int(len(frame)),
+            "fraud_n": int(y_true.sum()),
+            "fraud_rate": float(y_true.mean()),
+            "roc_auc": float(roc_auc_score(y_true, scores)),
+            "pr_auc": float(average_precision_score(y_true, scores)),
+            "brier": float(brier_score_loss(y_true, scores)),
+            "ece_10bin": ece,
+            "best_f1_threshold_holdout_descriptive": opt["threshold"],
+            "best_f1_precision_holdout_descriptive": opt["precision"],
+            "best_f1_recall_holdout_descriptive": opt["recall"],
+            "best_f1_holdout_descriptive": opt["f1"],
+            "tp_at_best_f1": int(tp),
+            "fp_at_best_f1": int(fp),
+            "tn_at_best_f1": int(tn),
+            "fn_at_best_f1": int(fn),
+        }})
+
+        for row in topk_capture_table(frame):
+            row["seed"] = seed
+            topk_rows.append(row)
+
+        for row in decision_policy_metrics(frame):
+            row["seed"] = seed
+            policy_rows.append(row)
+
+        decision_counts = frame["decision"].value_counts(dropna=False)
+        for decision, count in decision_counts.items():
+            decision_rows.append({{
+                "seed": seed,
+                "decision": str(decision),
+                "count": int(count),
+                "rate": float(count / len(frame)),
+            }})
+
+        for row in cal_rows:
+            row["seed"] = seed
+            calibration_rows.append(row)
+
+        score_bins = score_quantile_bins(frame)
+        score_bins["seed"] = seed
+        score_bin_frames.append(score_bins)
+
+    academic_seed_metrics = pd.DataFrame(seed_rows).sort_values("seed")
+    academic_topk = pd.DataFrame(topk_rows).sort_values(["seed", "top_percent"])
+    academic_policy = pd.DataFrame(policy_rows).sort_values(["seed", "policy"])
+    academic_decisions = pd.DataFrame(decision_rows).sort_values(["seed", "decision"])
+    academic_calibration = pd.DataFrame(calibration_rows).sort_values(["seed", "bin"])
+    academic_score_bins = pd.concat(score_bin_frames, ignore_index=True)
+
+    metric_cols = [
+        "roc_auc",
+        "pr_auc",
+        "brier",
+        "ece_10bin",
+        "best_f1_holdout_descriptive",
+        "best_f1_precision_holdout_descriptive",
+        "best_f1_recall_holdout_descriptive",
+    ]
+    summary_rows = []
+    t_975 = 4.303 if len(academic_seed_metrics) == 3 else 1.96
+    for metric in metric_cols:
+        values = academic_seed_metrics[metric].astype(float)
+        std = float(values.std(ddof=1)) if len(values) > 1 else 0.0
+        ci_half_width = float(t_975 * std / math.sqrt(len(values))) if len(values) > 1 else 0.0
+        summary_rows.append({{
+            "metric": metric,
+            "mean": float(values.mean()),
+            "std": std,
+            "min": float(values.min()),
+            "max": float(values.max()),
+            "ci95_low": float(values.mean() - ci_half_width),
+            "ci95_high": float(values.mean() + ci_half_width),
+        }})
+    academic_metric_summary = pd.DataFrame(summary_rows)
+
+    academic_seed_metrics.to_csv(ACADEMIC_EVAL_DIR / "academic_seed_metrics.csv", index=False)
+    academic_metric_summary.to_csv(ACADEMIC_EVAL_DIR / "academic_metric_summary.csv", index=False)
+    academic_topk.to_csv(ACADEMIC_EVAL_DIR / "academic_topk_capture.csv", index=False)
+    academic_policy.to_csv(ACADEMIC_EVAL_DIR / "academic_policy_metrics.csv", index=False)
+    academic_decisions.to_csv(ACADEMIC_EVAL_DIR / "academic_decision_distribution.csv", index=False)
+    academic_calibration.to_csv(ACADEMIC_EVAL_DIR / "academic_calibration_bins.csv", index=False)
+    academic_score_bins.to_csv(ACADEMIC_EVAL_DIR / "academic_score_deciles.csv", index=False)
+
+    academic_summary_json = {{
+        "dataset": "{dataset}",
+        "n_seeds": int(len(academic_seed_metrics)),
+        "holdout_rows_per_seed": int(academic_seed_metrics["n_holdout"].iloc[0]),
+        "fraud_rate_mean": float(academic_seed_metrics["fraud_rate"].mean()),
+        "primary_tables": {{
+            "seed_metrics": "academic_seed_metrics.csv",
+            "metric_summary": "academic_metric_summary.csv",
+            "topk_capture": "academic_topk_capture.csv",
+            "policy_metrics": "academic_policy_metrics.csv",
+            "decision_distribution": "academic_decision_distribution.csv",
+            "calibration_bins": "academic_calibration_bins.csv",
+            "score_deciles": "academic_score_deciles.csv",
+        }},
+        "note": "Holdout descriptive threshold metrics are for reporting analysis. The pipeline's operational threshold is selected from training/OOF predictions.",
+    }}
+    (ACADEMIC_EVAL_DIR / "academic_evaluation_summary.json").write_text(
+        json.dumps(academic_summary_json, indent=2),
+        encoding="utf-8",
+    )
+
+    latest_seed = max(frames_by_seed)
+    latest = frames_by_seed[latest_seed]
+    y_latest = latest["isFraud"].astype(int).to_numpy()
+    score_latest = latest["fraud_score"].astype(float).to_numpy()
+
+    plt.figure(figsize=(7, 4))
+    plt.hist(score_latest[y_latest == 0], bins=50, alpha=0.65, label="Legitimate", density=True)
+    plt.hist(score_latest[y_latest == 1], bins=50, alpha=0.65, label="Fraud", density=True)
+    plt.xlabel("Fraud score")
+    plt.ylabel("Density")
+    plt.title(f"{{DATASET.upper()}} score distribution by class (seed {{latest_seed}})")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(ACADEMIC_EVAL_DIR / f"score_distribution_seed_{{latest_seed}}.png", dpi=160)
+    plt.show()
+
+    latest_topk = academic_topk[academic_topk["seed"] == latest_seed]
+    plt.figure(figsize=(7, 4))
+    plt.plot(latest_topk["top_percent"], latest_topk["recall"], marker="o", label="Fraud recall")
+    plt.plot(latest_topk["top_percent"], latest_topk["precision"], marker="s", label="Precision")
+    plt.xlabel("Top risk population reviewed (%)")
+    plt.ylabel("Rate")
+    plt.title(f"{{DATASET.upper()}} top-k fraud capture (seed {{latest_seed}})")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(ACADEMIC_EVAL_DIR / f"topk_capture_seed_{{latest_seed}}.png", dpi=160)
+    plt.show()
+
+    latest_cal = academic_calibration[(academic_calibration["seed"] == latest_seed) & (academic_calibration["n"] > 0)]
+    plt.figure(figsize=(5, 5))
+    plt.plot([0, 1], [0, 1], linestyle="--", color="gray")
+    plt.scatter(latest_cal["mean_score"], latest_cal["fraud_rate"], s=np.maximum(latest_cal["n"] / latest_cal["n"].max() * 160, 20))
+    plt.xlabel("Mean predicted score")
+    plt.ylabel("Observed fraud rate")
+    plt.title(f"{{DATASET.upper()}} calibration bins (seed {{latest_seed}})")
+    plt.tight_layout()
+    plt.savefig(ACADEMIC_EVAL_DIR / f"calibration_seed_{{latest_seed}}.png", dpi=160)
+    plt.show()
+
+    print("Academic evaluation artifacts written to:", ACADEMIC_EVAL_DIR)
+    print("Seed-level metrics:")
+    display(academic_seed_metrics)
+    print("Metric summary with approximate 95% CI:")
+    display(academic_metric_summary)
+    print("Top-k fraud capture:")
+    display(academic_topk)
+    print("HITL / blocking policy metrics:")
+    display(academic_policy)
+    print("Decision distribution:")
+    display(academic_decisions)
+    """
+
+
 def report_code(dataset_label: str, dataset: str) -> str:
     return f"""
     from IPython.display import Markdown, display
@@ -568,6 +902,50 @@ def report_code(dataset_label: str, dataset: str) -> str:
     mean_smoothed_f1 = metrics["smoothed_f1"].mean()
     std_smoothed_f1 = metrics["smoothed_f1"].std(ddof=1) if len(metrics) > 1 else 0.0
     mean_latency = metrics["latency_ms"].mean()
+    academic_eval_dir = ARTIFACTS_DIR / "academic_evaluation"
+    academic_metric_summary_path = academic_eval_dir / "academic_metric_summary.csv"
+    academic_topk_path = academic_eval_dir / "academic_topk_capture.csv"
+    academic_policy_path = academic_eval_dir / "academic_policy_metrics.csv"
+    academic_decisions_path = academic_eval_dir / "academic_decision_distribution.csv"
+
+    if academic_metric_summary_path.exists():
+        academic_metric_summary = pd.read_csv(academic_metric_summary_path)
+        topk_table = pd.read_csv(academic_topk_path) if academic_topk_path.exists() else pd.DataFrame()
+        policy_table = pd.read_csv(academic_policy_path) if academic_policy_path.exists() else pd.DataFrame()
+        decision_table = pd.read_csv(academic_decisions_path) if academic_decisions_path.exists() else pd.DataFrame()
+        roc_row = academic_metric_summary[academic_metric_summary["metric"] == "roc_auc"].iloc[0]
+        pr_row = academic_metric_summary[academic_metric_summary["metric"] == "pr_auc"].iloc[0]
+        ece_row = academic_metric_summary[academic_metric_summary["metric"] == "ece_10bin"].iloc[0]
+        brier_row = academic_metric_summary[academic_metric_summary["metric"] == "brier"].iloc[0]
+        f1_row = academic_metric_summary[academic_metric_summary["metric"] == "best_f1_holdout_descriptive"].iloc[0]
+        topk_excerpt = topk_table.to_markdown(index=False) if not topk_table.empty else "Not generated."
+        policy_excerpt = policy_table.to_markdown(index=False) if not policy_table.empty else "Not generated."
+        decision_excerpt = decision_table.to_markdown(index=False) if not decision_table.empty else "Not generated."
+        advanced_results_md = f'''
+    ## Extended Academic Evaluation
+
+    - Holdout ROC-AUC from saved predictions: {{roc_row["mean"]:.4f}} +/- {{roc_row["std"]:.4f}}
+    - Holdout PR-AUC from saved predictions: {{pr_row["mean"]:.4f}} +/- {{pr_row["std"]:.4f}}
+    - Descriptive best-F1 on holdout scores: {{f1_row["mean"]:.4f}} +/- {{f1_row["std"]:.4f}}
+    - Brier score: {{brier_row["mean"]:.4f}} +/- {{brier_row["std"]:.4f}}
+    - 10-bin ECE: {{ece_row["mean"]:.4f}} +/- {{ece_row["std"]:.4f}}
+
+    ### Top-k Fraud Capture
+
+    {{topk_excerpt}}
+
+    ### HITL / Blocking Policy Metrics
+
+    {{policy_excerpt}}
+
+    ### Decision Distribution
+
+    {{decision_excerpt}}
+
+    Generated academic evaluation tables and figures are stored under `academic_evaluation/`.
+    '''
+    else:
+        advanced_results_md = "## Extended Academic Evaluation\\n\\nRun the academic evaluation cell before this report cell to generate extended tables and figures."
 
     report_md = f'''
     # Academic Experiment Report: {dataset_label}
@@ -597,6 +975,8 @@ def report_code(dataset_label: str, dataset: str) -> str:
     - Smoothed holdout F1: {{mean_smoothed_f1:.4f}} +/- {{std_smoothed_f1:.4f}}
     - Median decision latency: {{mean_latency:.2f}} ms
 
+    {{advanced_results_md}}
+
     ## Artifacts
 
     - Run config: `run_config.json`
@@ -604,10 +984,11 @@ def report_code(dataset_label: str, dataset: str) -> str:
     - Per-seed holdout predictions: `seed_*/{dataset}_holdout_predictions.csv`
     - Full training log: `{dataset}_academic_full_train.log`
     - Artifact inventory: `artifact_index.csv`
+    - Extended academic tables and figures: `academic_evaluation/`
 
     ## Reporting Notes
 
-    These results are valid for academic reporting only after the notebook has completed successfully on the real dataset. The signed dataset links are time-limited; a failed download should be resolved by refreshing the Kaggle signed URLs and rerunning the download cell.
+    These results are valid for academic reporting only after the notebook has completed successfully on the real dataset. Descriptive holdout-threshold metrics are reported for analysis; the operational pipeline threshold is selected from training/OOF predictions to avoid holdout leakage. The signed dataset links are time-limited; a failed download should be resolved by refreshing the Kaggle signed URLs and rerunning the download cell.
     '''
 
     report_path = ARTIFACTS_DIR / "academic_report.md"
@@ -754,6 +1135,7 @@ def build_notebook(dataset: str) -> nbformat.NotebookNode:
         code_cell(f"{dataset}-dataset-download", download_code),
         code_cell(f"{dataset}-run-pipeline", run_pipeline_code(dataset)),
         code_cell(f"{dataset}-artifact-review", artifact_review_code(dataset)),
+        code_cell(f"{dataset}-academic-evaluation", academic_evaluation_code(dataset)),
         code_cell(f"{dataset}-academic-report", report_code(dataset_label, dataset)),
         code_cell(f"{dataset}-package-artifacts", package_artifacts_code(dataset)),
     ]
