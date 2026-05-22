@@ -13,6 +13,7 @@ IEEE_NOTEBOOK_PATH = NOTEBOOK_DIR / "06_MVS_XAI_Ultimate_IEEE_CIS.ipynb"
 PAYSIM_NOTEBOOK_PATH = NOTEBOOK_DIR / "07_MVS_XAI_PaySim.ipynb"
 
 GIT_REPO_URL = "https://github.com/Thanh-000/MVS-XAI-Fraud-Detection"
+GIT_BRANCH = "main"
 
 PAYSIM_BUNDLE_URL = (
     "https://storage.googleapis.com/kaggle-data-sets/3805493/6594115/bundle/archive.zip?"
@@ -59,7 +60,9 @@ def code_cell(cell_id: str, source: str):
     return cell
 
 
-def repo_config_code() -> str:
+def repo_config_code(dataset: str) -> str:
+    experiment_slug = "ieee_cis" if dataset == "ieee" else "paysim"
+    runtime_dir = f"/content/MVS-XAI-{experiment_slug}-Experiment"
     return f"""
     from pathlib import Path
     import os
@@ -67,14 +70,61 @@ def repo_config_code() -> str:
     import subprocess
 
     GIT_REPO_URL = {GIT_REPO_URL!r}
-    GIT_BRANCH = ""  # optional: set a branch/tag/commit before running clone
-    RUNTIME_REPO_PATH = Path("/content/MVS-XAI-Fraud-Detection")
+    GIT_BRANCH = {GIT_BRANCH!r}
+    EXPERIMENT_DATASET = {dataset!r}
+    EXPERIMENT_SLUG = {experiment_slug!r}
+    RUNTIME_REPO_PATH = Path({runtime_dir!r})
 
     def has_repo_files(path: Path) -> bool:
         return (path / "main_train_pipeline.py").exists() and (path / "src").exists()
 
+    def running_in_colab_runtime() -> bool:
+        if os.environ.get("COLAB_RELEASE_TAG"):
+            return True
+        try:
+            import google.colab  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    def checkout_requested_revision(path: Path) -> None:
+        revision = GIT_BRANCH.strip()
+        if not revision:
+            return
+        if not (path / ".git").exists():
+            print(f"Repository path has no .git metadata; skipping checkout: {{path}}")
+            return
+
+        print(f"Checking out repository revision: {{revision}}")
+        subprocess.run(["git", "fetch", "origin", revision], cwd=path, check=False)
+        remote_ref = f"origin/{{revision}}"
+        remote_exists = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", remote_ref],
+            cwd=path,
+            check=False,
+        ).returncode == 0
+
+        if remote_exists:
+            subprocess.run(["git", "checkout", "-B", revision, remote_ref], cwd=path, check=True)
+        else:
+            subprocess.run(["git", "checkout", revision], cwd=path, check=True)
+
+        subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=path, check=True)
+
+    def prepare_runtime_repo(path: Path) -> Path:
+        if path.exists() and has_repo_files(path):
+            print(f"Using existing experiment repository: {{path}}")
+            return path
+        if path.exists():
+            shutil.rmtree(path)
+        subprocess.run(["git", "clone", GIT_REPO_URL, str(path)], check=True)
+        print(f"Cloned experiment repository: {{path}}")
+        return path
+
     current = Path.cwd().resolve()
-    if has_repo_files(current):
+    if running_in_colab_runtime():
+        REPO_ROOT = prepare_runtime_repo(RUNTIME_REPO_PATH)
+    elif has_repo_files(current):
         REPO_ROOT = current
         print(f"Using current repository: {{REPO_ROOT}}")
     elif RUNTIME_REPO_PATH.exists() and has_repo_files(RUNTIME_REPO_PATH):
@@ -85,13 +135,15 @@ def repo_config_code() -> str:
             shutil.rmtree(RUNTIME_REPO_PATH)
         subprocess.run(["git", "clone", GIT_REPO_URL, str(RUNTIME_REPO_PATH)], check=True)
         REPO_ROOT = RUNTIME_REPO_PATH
-        if GIT_BRANCH.strip():
-            subprocess.run(["git", "checkout", GIT_BRANCH], cwd=REPO_ROOT, check=True)
+
+    checkout_requested_revision(REPO_ROOT)
 
     os.chdir(REPO_ROOT)
-    DATA_DIR = REPO_ROOT / "data"
+    DATA_DIR = REPO_ROOT / "data" / EXPERIMENT_SLUG
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+    print(f"Experiment dataset: {{EXPERIMENT_DATASET}}")
+    print(f"Experiment slug: {{EXPERIMENT_SLUG}}")
     print(f"Repo root: {{REPO_ROOT}}")
     print(f"Data directory: {{DATA_DIR}}")
     print("Google Drive is not mounted or used.")
@@ -310,8 +362,37 @@ def download_helpers_code() -> str:
 
 
 def run_pipeline_code(dataset: str) -> str:
+    paysim_constants = ""
+    paysim_run_config_update = ""
+    paysim_pipeline_kwargs_update = ""
+    if dataset == "paysim":
+        paysim_constants = """
+    PIPELINE_PAYSIM_CHUNK_SIZE = 750000
+    PIPELINE_PAYSIM_MAX_ROWS = None
+    PIPELINE_PAYSIM_STEP_BLOCK_SIZE = 24
+"""
+        paysim_run_config_update = """
+    run_config.update(
+        {
+            "paysim_chunk_size": PIPELINE_PAYSIM_CHUNK_SIZE,
+            "paysim_max_rows": PIPELINE_PAYSIM_MAX_ROWS,
+            "paysim_step_block_size": PIPELINE_PAYSIM_STEP_BLOCK_SIZE,
+        }
+    )
+"""
+        paysim_pipeline_kwargs_update = """
+            pipeline_kwargs.update(
+                {
+                    "paysim_chunk_size": PIPELINE_PAYSIM_CHUNK_SIZE,
+                    "paysim_max_rows": PIPELINE_PAYSIM_MAX_ROWS,
+                    "paysim_step_block_size": PIPELINE_PAYSIM_STEP_BLOCK_SIZE,
+                }
+            )
+"""
+
     return f"""
     import contextlib
+    import inspect
     import io
     import math
     from datetime import datetime, timezone
@@ -347,9 +428,7 @@ def run_pipeline_code(dataset: str) -> str:
     PIPELINE_SMOTE_STRATEGY = 0.30
     PIPELINE_CTGAN_SAMPLES = 0
     PIPELINE_CTGAN_EPOCHS = 30
-    PIPELINE_PAYSIM_CHUNK_SIZE = 750000
-    PIPELINE_PAYSIM_MAX_ROWS = None
-    PIPELINE_PAYSIM_STEP_BLOCK_SIZE = 24
+{paysim_constants}
 
     ARTIFACTS_DIR = REPO_ROOT / "artifacts" / f"{{DATASET}}_academic_full"
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -372,10 +451,8 @@ def run_pipeline_code(dataset: str) -> str:
         "smote_strategy": PIPELINE_SMOTE_STRATEGY,
         "ctgan_samples": PIPELINE_CTGAN_SAMPLES,
         "ctgan_epochs": PIPELINE_CTGAN_EPOCHS,
-        "paysim_chunk_size": PIPELINE_PAYSIM_CHUNK_SIZE,
-        "paysim_max_rows": PIPELINE_PAYSIM_MAX_ROWS,
-        "paysim_step_block_size": PIPELINE_PAYSIM_STEP_BLOCK_SIZE,
     }}
+{paysim_run_config_update}
     (ARTIFACTS_DIR / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
 
     print("Research method:", METHOD_NAME)
@@ -385,24 +462,39 @@ def run_pipeline_code(dataset: str) -> str:
     with LOG_PATH.open("w", encoding="utf-8") as log_file:
         tee = Tee(sys.stdout, log_file)
         with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
-            seed_results = run_mvs_xai_pipeline(
-                data_dir=str(DATA_DIR),
-                device=PIPELINE_DEVICE,
-                dataset=DATASET,
-                test_ratio=PIPELINE_TEST_RATIO,
-                n_splits=PIPELINE_N_SPLITS,
-                gap_size=PIPELINE_GAP_SIZE,
-                seed=PIPELINE_SEED,
-                n_seeds=PIPELINE_N_SEEDS,
-                smote_strategy=PIPELINE_SMOTE_STRATEGY,
-                ctgan_samples=PIPELINE_CTGAN_SAMPLES,
-                ctgan_epochs=PIPELINE_CTGAN_EPOCHS,
-                paysim_chunk_size=PIPELINE_PAYSIM_CHUNK_SIZE,
-                paysim_max_rows=PIPELINE_PAYSIM_MAX_ROWS,
-                paysim_step_block_size=PIPELINE_PAYSIM_STEP_BLOCK_SIZE,
-                preset=PIPELINE_PRESET,
-                artifacts_dir=str(ARTIFACTS_DIR),
-            )
+            pipeline_kwargs = {{
+                "data_dir": str(DATA_DIR),
+                "device": PIPELINE_DEVICE,
+                "dataset": DATASET,
+                "test_ratio": PIPELINE_TEST_RATIO,
+                "n_splits": PIPELINE_N_SPLITS,
+                "gap_size": PIPELINE_GAP_SIZE,
+                "seed": PIPELINE_SEED,
+                "n_seeds": PIPELINE_N_SEEDS,
+                "smote_strategy": PIPELINE_SMOTE_STRATEGY,
+                "ctgan_samples": PIPELINE_CTGAN_SAMPLES,
+                "ctgan_epochs": PIPELINE_CTGAN_EPOCHS,
+                "preset": PIPELINE_PRESET,
+                "artifacts_dir": str(ARTIFACTS_DIR),
+            }}
+{paysim_pipeline_kwargs_update}
+            signature = inspect.signature(run_mvs_xai_pipeline)
+            accepted_kwargs = {{
+                key: value
+                for key, value in pipeline_kwargs.items()
+                if key in signature.parameters
+            }}
+            dropped_kwargs = sorted(set(pipeline_kwargs) - set(accepted_kwargs))
+            if dropped_kwargs:
+                print(
+                    "Warning: pipeline function does not accept these notebook parameters: "
+                    + ", ".join(dropped_kwargs)
+                )
+                print(
+                    "The notebook should have checked out the expected Git branch. "
+                    "If this warning persists, rerun the clone/setup cell."
+                )
+            seed_results = run_mvs_xai_pipeline(**accepted_kwargs)
 
     print(f"Training log saved to: {{LOG_PATH}}")
     print(f"Artifacts directory: {{ARTIFACTS_DIR}}")
@@ -649,7 +741,7 @@ def build_notebook(dataset: str) -> nbformat.NotebookNode:
     cells = [
         markdown_cell(f"{dataset}-intro", intro_md),
         markdown_cell(f"{dataset}-research-protocol", protocol_md),
-        code_cell(f"{dataset}-repo-config", repo_config_code()),
+        code_cell(f"{dataset}-repo-config", repo_config_code(dataset)),
         code_cell(f"{dataset}-environment", environment_code()),
         code_cell(f"{dataset}-download-helpers", download_helpers_code()),
         code_cell(f"{dataset}-dataset-download", download_code),
