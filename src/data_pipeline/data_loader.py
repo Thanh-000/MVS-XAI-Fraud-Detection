@@ -18,6 +18,7 @@ class DataLoader:
         "paysim.csv",
         "PS_20174392719_1491204439457_log.csv",
         "paysim_log.csv",
+        "paysim dataset.csv",
     )
     PAYSIM_REQUIRED_COLS = (
         "step",
@@ -93,11 +94,11 @@ class DataLoader:
         max_rows=None,
         step_block_size=None,
     ):
-        paysim_path = cls._resolve_existing_path(data_dir, cls.PAYSIM_CANDIDATES)
+        paysim_path = cls._resolve_paysim_path(data_dir)
         if paysim_path is None:
             raise FileNotFoundError(
-                "PaySim file not found. Expected one of: "
-                f"{', '.join(cls.PAYSIM_CANDIDATES)} under {os.path.abspath(data_dir)}"
+                "PaySim file not found. Expected a CSV with required PaySim columns "
+                f"under {os.path.abspath(data_dir)}"
             )
 
         print(f"  Loading PaySim data from '{os.path.basename(paysim_path)}'...")
@@ -236,6 +237,31 @@ class DataLoader:
             path = os.path.join(data_dir, filename)
             if os.path.exists(path):
                 return path
+        return None
+
+    @classmethod
+    def _resolve_paysim_path(cls, data_dir):
+        candidate = cls._resolve_existing_path(data_dir, cls.PAYSIM_CANDIDATES)
+        if candidate is not None:
+            return candidate
+
+        for root, _, _ in os.walk(data_dir):
+            candidate = cls._resolve_existing_path(root, cls.PAYSIM_CANDIDATES)
+            if candidate is not None:
+                return candidate
+
+        required = set(cls.PAYSIM_REQUIRED_COLS)
+        for root, _, files in os.walk(data_dir):
+            for filename in sorted(files):
+                if not filename.lower().endswith(".csv"):
+                    continue
+                path = os.path.join(root, filename)
+                try:
+                    columns = set(pd.read_csv(path, nrows=0).columns)
+                except Exception:
+                    continue
+                if required.issubset(columns):
+                    return path
         return None
 
     @staticmethod

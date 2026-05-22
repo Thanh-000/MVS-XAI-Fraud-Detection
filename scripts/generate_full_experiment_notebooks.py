@@ -112,8 +112,6 @@ def environment_code() -> str:
     import time
     import zipfile
 
-    import pandas as pd
-
     def run_checked(cmd, cwd=REPO_ROOT):
         print("+", " ".join(str(part) for part in cmd))
         subprocess.run([str(part) for part in cmd], cwd=cwd, check=True)
@@ -121,10 +119,19 @@ def environment_code() -> str:
     def module_available(module_name):
         return importlib.util.find_spec(module_name) is not None
 
+    def running_in_colab():
+        if os.environ.get("COLAB_RELEASE_TAG"):
+            return True
+        try:
+            import google.colab  # noqa: F401
+            return True
+        except Exception:
+            return False
+
     def pip_install(packages, required=True):
         packages = list(dict.fromkeys(packages))
         if not packages:
-            return
+            return False
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-q", *packages],
             cwd=REPO_ROOT,
@@ -134,6 +141,8 @@ def environment_code() -> str:
             raise subprocess.CalledProcessError(result.returncode, packages)
         if result.returncode != 0:
             print("Optional install skipped:", packages)
+            return False
+        return True
 
     def ensure_aria2():
         if shutil.which("aria2c"):
@@ -166,8 +175,30 @@ def environment_code() -> str:
     ]
 
     ensure_aria2()
-    pip_install([package for module, package in REQUIRED_MODULES if not module_available(module)], required=True)
-    pip_install([package for module, package in OPTIONAL_MODULES if not module_available(module)], required=False)
+    did_install = False
+    did_install = pip_install(
+        [package for module, package in REQUIRED_MODULES if not module_available(module)],
+        required=True,
+    ) or did_install
+    did_install = pip_install(
+        [package for module, package in OPTIONAL_MODULES if not module_available(module)],
+        required=False,
+    ) or did_install
+
+    if did_install and running_in_colab():
+        print(
+            "Python packages were installed or updated. "
+            "Restarting the Colab runtime now to avoid NumPy/SciPy binary mismatch. "
+            "After the restart, run the notebook from the first cell again."
+        )
+        os.kill(os.getpid(), 9)
+
+    import numpy as np
+    import pandas as pd
+
+    print(f"Python: {sys.version.split()[0]}")
+    print(f"NumPy:  {np.__version__}")
+    print(f"Pandas: {pd.__version__}")
 
     if shutil.which("nvidia-smi"):
         subprocess.run(["nvidia-smi"], check=False)
@@ -230,6 +261,39 @@ def download_helpers_code() -> str:
             return direct
         matches = sorted(root.rglob(filename), key=lambda path: (len(path.parts), str(path)))
         return matches[0] if matches else None
+
+    def find_csv_with_columns(
+        root: Path,
+        required_columns: list[str],
+        preferred_names: list[str] | None = None,
+    ) -> Path:
+        root = Path(root)
+        required = set(required_columns)
+        preferred = {name.lower() for name in (preferred_names or [])}
+        csv_paths = sorted(
+            root.rglob("*.csv"),
+            key=lambda path: (path.name.lower() not in preferred, len(path.parts), str(path).lower()),
+        )
+
+        checked = []
+        for path in csv_paths:
+            try:
+                header = pd.read_csv(path, nrows=0)
+            except Exception as exc:
+                checked.append(f"{path}: unreadable header ({exc})")
+                continue
+
+            missing = sorted(required - set(header.columns))
+            if not missing:
+                print(f"Detected dataset CSV by schema: {path}")
+                return path
+            checked.append(f"{path}: missing {missing}")
+
+        detail = "\\n".join(checked[:20]) if checked else "No CSV files found."
+        raise FileNotFoundError(
+            "Could not find a CSV with required columns: "
+            f"{', '.join(required_columns)}\\nChecked files:\\n{detail}"
+        )
 
     def move_to_data_root(source: Path, target_name: str) -> Path:
         source = Path(source)
@@ -507,10 +571,23 @@ def paysim_download_code() -> str:
     PAYSIM_BUNDLE_URL = {PAYSIM_BUNDLE_URL!r}
     FORCE_DOWNLOAD = False
     DELETE_ARCHIVE_AFTER_EXTRACT = False
-    PAYSIM_CANDIDATES = [
+    PAYSIM_PREFERRED_NAMES = [
         "paysim.csv",
         "PS_20174392719_1491204439457_log.csv",
         "paysim_log.csv",
+        "paysim dataset.csv",
+    ]
+    PAYSIM_REQUIRED_COLUMNS = [
+        "step",
+        "type",
+        "amount",
+        "nameOrig",
+        "nameDest",
+        "oldbalanceOrg",
+        "newbalanceOrig",
+        "oldbalanceDest",
+        "newbalanceDest",
+        "isFraud",
     ]
 
     if (DATA_DIR / "paysim.csv").exists():
@@ -521,14 +598,7 @@ def paysim_download_code() -> str:
         if DELETE_ARCHIVE_AFTER_EXTRACT:
             paysim_zip.unlink(missing_ok=True)
 
-    paysim_path = None
-    for candidate in PAYSIM_CANDIDATES:
-        paysim_path = find_file(DATA_DIR, candidate)
-        if paysim_path is not None:
-            break
-    if paysim_path is None:
-        raise FileNotFoundError(f"PaySim archive must contain one of: {{', '.join(PAYSIM_CANDIDATES)}}")
-
+    paysim_path = find_csv_with_columns(DATA_DIR, PAYSIM_REQUIRED_COLUMNS, PAYSIM_PREFERRED_NAMES)
     move_to_data_root(paysim_path, "paysim.csv")
     path = DATA_DIR / "paysim.csv"
     print(f"PaySim file ready: {{path}} ({{path.stat().st_size / 1024**2:.1f}} MB)")
