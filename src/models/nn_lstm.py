@@ -11,7 +11,40 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
+
+
+class ZeroSequenceDataset(Dataset):
+    """PyTorch dataset for lazy all-zero sequence tensors."""
+
+    def __init__(self, n_samples, seq_len, n_features, y=None):
+        self.n_samples = int(n_samples)
+        self.seq_len = int(seq_len)
+        self.n_features = int(n_features)
+        self.y = y
+
+    def __len__(self):
+        return self.n_samples
+
+    def __getitem__(self, idx):
+        x = torch.zeros((self.seq_len, self.n_features), dtype=torch.float32)
+        if self.y is None:
+            return x, torch.tensor(0.0, dtype=torch.float32)
+        return x, torch.tensor(float(self.y[idx]), dtype=torch.float32)
+
+
+def make_sequence_dataset(X_seq, y=None):
+    if getattr(X_seq, "is_zero_sequence", False):
+        return ZeroSequenceDataset(
+            n_samples=X_seq.shape[0],
+            seq_len=X_seq.shape[1],
+            n_features=X_seq.shape[2],
+            y=y,
+        )
+
+    X_tensor = torch.as_tensor(X_seq, dtype=torch.float32)
+    y_tensor = torch.zeros(len(X_seq), dtype=torch.float32) if y is None else torch.as_tensor(y, dtype=torch.float32)
+    return TensorDataset(X_tensor, y_tensor)
 
 
 class FocalLoss(nn.Module):
@@ -80,16 +113,12 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
     criterion = FocalLoss(alpha=0.75, gamma=2.0)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    train_ds = TensorDataset(
-        torch.tensor(X_seq_trn, dtype=torch.float32),
-        torch.tensor(y_trn, dtype=torch.float32)
-    )
+    train_ds = make_sequence_dataset(X_seq_trn, y_trn)
     generator = torch.Generator(device="cpu")
     generator.manual_seed(seed)
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, generator=generator)
 
-    val_t = torch.tensor(X_seq_val, dtype=torch.float32)
-    val_y_t = torch.tensor(y_val, dtype=torch.float32)
+    val_ds_eval = make_sequence_dataset(X_seq_val, y_val)
 
     best_val_loss = float('inf')
     best_ep = 0
@@ -108,8 +137,7 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
         # --- Best-state tracking (NO early stopping) ---
         model.eval()
         with torch.no_grad():
-            val_ds_tmp = TensorDataset(val_t, val_y_t)
-            val_loader_tmp = DataLoader(val_ds_tmp, batch_size=batch_size, shuffle=False)
+            val_loader_tmp = DataLoader(val_ds_eval, batch_size=batch_size, shuffle=False)
             val_loss = 0
             for X_b, y_b in val_loader_tmp:
                 X_b, y_b = X_b.to(device), y_b.to(device)
@@ -128,7 +156,7 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
 
     # --- Predict validation set ---
     model.eval()
-    val_ds = TensorDataset(val_t, torch.zeros(len(val_t)))
+    val_ds = make_sequence_dataset(X_seq_val)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
     preds = []
     with torch.no_grad():

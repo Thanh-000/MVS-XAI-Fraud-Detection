@@ -42,7 +42,7 @@ from src.evaluation.wasserstein import wasserstein_drift_report
 from src.evaluation.xai_harness import XAIEvaluationHarness
 from src.feature_engineering.uid_features import UIDFeatureEngineer, UIDPostProcessor
 from src.feature_engineering.view_behavioral import BehavioralExtractor
-from src.feature_engineering.view_sequential import SequentialTensorBuilder
+from src.feature_engineering.view_sequential import SequentialTensorBuilder, ZeroSequenceArray
 from src.feature_engineering.view_tabular import TabularFeatureExtractor
 from src.models.base_trees import TreeEnsembleFactory
 from src.ops_pipeline.hitl_router import HITLRouter
@@ -213,13 +213,25 @@ def fit_tree_model(
         model.fit(X_train_fit, y_train, eval_set=[(X_val_fit, y_val)])
     if X_val is None:
         return model, None
-    return model, model.predict_proba(X_val_fit)[:, 1]
+    return model, model.predict_proba(X_val_fit)[:, 1].astype(np.float32, copy=False)
 
 
 def build_sequence_train_val(X_train_scaled, X_val_scaled, entity_train, entity_val, seq_len=10):
     builder = SequentialTensorBuilder(seq_len=seq_len)
-    combined_X = np.vstack([X_train_scaled, X_val_scaled])
     combined_ids = np.concatenate([entity_train, entity_val])
+    if pd.Index(combined_ids).is_unique:
+        n_features = X_train_scaled.shape[1]
+        print(
+            "  View 2 (Sequential): Unique entities; using lazy zero tensors "
+            f"train=({len(X_train_scaled)}, {seq_len}, {n_features}), "
+            f"val=({len(X_val_scaled)}, {seq_len}, {n_features})"
+        )
+        return (
+            ZeroSequenceArray(len(X_train_scaled), seq_len, n_features),
+            ZeroSequenceArray(len(X_val_scaled), seq_len, n_features),
+        )
+
+    combined_X = np.vstack([X_train_scaled, X_val_scaled])
     combined_seq = builder.build_card_sequences(combined_X, combined_ids)
     split_idx = len(X_train_scaled)
     return combined_seq[:split_idx], combined_seq[split_idx:]
@@ -227,10 +239,12 @@ def build_sequence_train_val(X_train_scaled, X_val_scaled, entity_train, entity_
 
 def build_gate_applied_matrix(predictions_dict, model_names, gate_weights):
     gated = {
-        name: predictions_dict[name] * gate_weights[name]["gate_weight"]
+        name: (np.asarray(predictions_dict[name], dtype=np.float32) * gate_weights[name]["gate_weight"]).astype(
+            np.float32, copy=False
+        )
         for name in model_names
     }
-    matrix = np.column_stack([gated[name] for name in model_names])
+    matrix = np.column_stack([gated[name] for name in model_names]).astype(np.float32, copy=False)
     return gated, matrix
 
 
@@ -247,7 +261,7 @@ def prepare_tree_training_data(
     """Apply in-fold imbalance handling for tree models only."""
     from src.data_pipeline.data_sampler import DataBalanceEngine
 
-    X_work = np.asarray(X_train, dtype=float)
+    X_work = np.asarray(X_train, dtype=np.float32)
     y_work = np.asarray(y_train).astype(int)
     engine = DataBalanceEngine(random_state=seed)
 
@@ -269,7 +283,7 @@ def prepare_tree_training_data(
                 use_gpu=(device_type == "cuda"),
             )
             y_work = augmented["isFraud"].to_numpy(dtype=int)
-            X_work = augmented[feature_names].to_numpy(dtype=float)
+            X_work = augmented[feature_names].to_numpy(dtype=np.float32)
         except Exception as exc:
             print(f"  CTGAN skipped: {exc}")
 
@@ -304,7 +318,7 @@ def predict_mlp(model, X, device, batch_size=4096):
     from torch.utils.data import DataLoader, TensorDataset
 
     model.eval()
-    dataset = TensorDataset(torch.tensor(X, dtype=torch.float32), torch.zeros(len(X)))
+    dataset = TensorDataset(torch.as_tensor(X, dtype=torch.float32), torch.zeros(len(X)))
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     preds = []
     with torch.no_grad():
@@ -315,10 +329,11 @@ def predict_mlp(model, X, device, batch_size=4096):
 
 def predict_lstm(model, X_seq, device, batch_size=4096):
     import torch
-    from torch.utils.data import DataLoader, TensorDataset
+    from torch.utils.data import DataLoader
+    from src.models.nn_lstm import make_sequence_dataset
 
     model.eval()
-    dataset = TensorDataset(torch.tensor(X_seq, dtype=torch.float32), torch.zeros(len(X_seq)))
+    dataset = make_sequence_dataset(X_seq)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     preds = []
     with torch.no_grad():
@@ -639,11 +654,15 @@ def prepare_pipeline_payload(
 
     df = build_feature_frame(df_raw, dataset=dataset, fit_idx=train_idx)
 
-    y = df["isFraud"].values
+    y = df["isFraud"].to_numpy(dtype=np.int8, copy=False)
     base_drop_cols = ["isFraud", "TransactionID", "TransactionDT", "UID"]
     feature_cols = [col for col in df.columns if col not in base_drop_cols]
-    X = df[feature_cols].fillna(-999).values
-    entity_ids = df["card1"].values if "card1" in df.columns else df["UID"].values
+    X = df[feature_cols].fillna(-999).to_numpy(dtype=np.float32, copy=True)
+    entity_ids = (
+        df["card1"].to_numpy(copy=False)
+        if "card1" in df.columns
+        else df["UID"].to_numpy(copy=False)
+    )
 
     print(f"\n  Final dataset: {X.shape[0]:,} samples x {X.shape[1]} features")
     print(f"  Fraud rate: {y.mean() * 100:.2f}%")
@@ -734,7 +753,7 @@ def run_single_seed(
 
     print_section("PHASE 2: Walk-Forward CV on Training Slice")
     oof_train_predictions = {
-        model_name: np.full(len(X_train_all), np.nan, dtype=float) for model_name in active_models
+        model_name: np.full(len(X_train_all), np.nan, dtype=np.float32) for model_name in active_models
     }
 
     fold_count = 0
@@ -772,7 +791,7 @@ def run_single_seed(
                 feature_names=feature_cols,
                 model_profile=model_profile,
             )
-            oof_train_predictions[model_name][fold_val_idx] = preds
+            oof_train_predictions[model_name][fold_val_idx] = np.asarray(preds, dtype=np.float32)
 
         if "MLP" in active_models:
             from src.models.nn_focal_mlp import train_mlp_focal
@@ -786,7 +805,7 @@ def run_single_seed(
                 epochs=mlp_epochs,
                 seed=seed + fold_i,
             )
-            oof_train_predictions["MLP"][fold_val_idx] = mlp_preds
+            oof_train_predictions["MLP"][fold_val_idx] = np.asarray(mlp_preds, dtype=np.float32)
 
         if "LSTM" in active_models:
             from src.models.nn_lstm import train_lstm_fold
@@ -804,7 +823,7 @@ def run_single_seed(
                 epochs=lstm_epochs,
                 seed=seed + fold_i,
             )
-            oof_train_predictions["LSTM"][fold_val_idx] = lstm_preds
+            oof_train_predictions["LSTM"][fold_val_idx] = np.asarray(lstm_preds, dtype=np.float32)
         gc.collect()
 
     if fold_count == 0:
@@ -829,7 +848,9 @@ def run_single_seed(
         name: oof_train_predictions[name][oof_mask] for name in active_models
     }
 
-    raw_train_oof_matrix = np.column_stack([oof_meta_predictions[name] for name in active_models])
+    raw_train_oof_matrix = np.column_stack([oof_meta_predictions[name] for name in active_models]).astype(
+        np.float32, copy=False
+    )
     gating = ConfidenceGating(tau=0.60)
     gated_train_predictions, gate_weights = gating.apply_gating(y_train_meta, oof_meta_predictions)
     train_oof_matrix = np.column_stack([gated_train_predictions[name] for name in active_models])
@@ -844,7 +865,7 @@ def run_single_seed(
 
     print_section("PHASE 3.5: Final Base-Model Fit and Holdout Prediction")
     holdout_base_predictions = {
-        model_name: np.zeros(len(X_holdout), dtype=float) for model_name in active_models
+        model_name: np.zeros(len(X_holdout), dtype=np.float32) for model_name in active_models
     }
     final_models = {}
 
@@ -888,7 +909,9 @@ def run_single_seed(
         holdout_tree_input = ensure_feature_frame(X_holdout, feature_cols)
         if model_name == "XGB":
             holdout_tree_input = prepare_xgb_device_input(holdout_tree_input, device.type)
-        holdout_base_predictions[model_name] = final_model.predict_proba(holdout_tree_input)[:, 1]
+        holdout_base_predictions[model_name] = final_model.predict_proba(holdout_tree_input)[:, 1].astype(
+            np.float32, copy=False
+        )
 
     if "MLP" in active_models:
         from src.models.nn_focal_mlp import train_mlp_focal
@@ -903,7 +926,9 @@ def run_single_seed(
             seed=seed,
         )
         final_models["MLP"] = mlp_model
-        holdout_base_predictions["MLP"] = predict_mlp(mlp_model, X_holdout_scaled, device)
+        holdout_base_predictions["MLP"] = predict_mlp(mlp_model, X_holdout_scaled, device).astype(
+            np.float32, copy=False
+        )
 
     X_holdout_seq = None
     if "LSTM" in active_models:
@@ -926,12 +951,16 @@ def run_single_seed(
         _, X_holdout_seq = build_sequence_train_val(
             X_train_scaled_full, X_holdout_scaled, entity_final_train, entity_holdout
         )
-        holdout_base_predictions["LSTM"] = predict_lstm(lstm_model, X_holdout_seq, device)
+        holdout_base_predictions["LSTM"] = predict_lstm(lstm_model, X_holdout_seq, device).astype(
+            np.float32, copy=False
+        )
 
     _, holdout_matrix = build_gate_applied_matrix(
         holdout_base_predictions, active_models, gate_weights
     )
-    raw_holdout_matrix = np.column_stack([holdout_base_predictions[name] for name in active_models])
+    raw_holdout_matrix = np.column_stack([holdout_base_predictions[name] for name in active_models]).astype(
+        np.float32, copy=False
+    )
     print(f"\n  Holdout stacked matrix shape: {holdout_matrix.shape}")
 
     gated_holdout_probas = meta.predict_proba(holdout_matrix)

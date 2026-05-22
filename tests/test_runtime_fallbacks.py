@@ -29,6 +29,21 @@ class RuntimeFallbackTests(unittest.TestCase):
             self.assertIn("MLP", active)
         self.assertEqual(pipeline.resolve_model_profile("fast_mvs"), "fast")
 
+    def test_unique_entity_sequences_are_lazy_zero_tensors(self):
+        X_train = np.ones((4, 3), dtype=np.float32)
+        X_val = np.ones((2, 3), dtype=np.float32)
+        train_seq, val_seq = pipeline.build_sequence_train_val(
+            X_train,
+            X_val,
+            entity_train=np.array([1, 2, 3, 4]),
+            entity_val=np.array([5, 6]),
+        )
+
+        self.assertTrue(getattr(train_seq, "is_zero_sequence", False))
+        self.assertTrue(getattr(val_seq, "is_zero_sequence", False))
+        self.assertEqual(train_seq.shape, (4, 10, 3))
+        self.assertEqual(val_seq[:1].shape, (1, 10, 3))
+
     def test_resampling_disabled_returns_original_data(self):
         X = np.array([[0.0], [1.0], [2.0], [3.0]])
         y = np.array([0, 0, 0, 1])

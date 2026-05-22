@@ -79,15 +79,15 @@ def train_mlp_focal(X_trn, y_trn, X_val, y_val, device, epochs=15, lr=0.001, bat
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     train_ds = TensorDataset(
-        torch.tensor(X_trn, dtype=torch.float32),
-        torch.tensor(y_trn, dtype=torch.float32)
+        torch.as_tensor(X_trn, dtype=torch.float32),
+        torch.as_tensor(y_trn, dtype=torch.float32)
     )
     generator = torch.Generator(device="cpu")
     generator.manual_seed(seed)
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, generator=generator)
 
-    val_t = torch.tensor(X_val, dtype=torch.float32)
-    val_y_t = torch.tensor(y_val, dtype=torch.float32)
+    val_t = torch.as_tensor(X_val, dtype=torch.float32)
+    val_y_t = torch.as_tensor(y_val, dtype=torch.float32)
 
     best_val_loss = float('inf')
     best_ep = 0

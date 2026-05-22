@@ -6,6 +6,34 @@ import numpy as np
 from collections import defaultdict
 
 
+class ZeroSequenceArray:
+    """Array-like all-zero sequence tensor without materializing the full tensor."""
+
+    is_zero_sequence = True
+
+    def __init__(self, n_samples, seq_len, n_features):
+        self.shape = (int(n_samples), int(seq_len), int(n_features))
+        self.dtype = np.float32
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __getitem__(self, item):
+        if isinstance(item, int):
+            if item < 0:
+                item += self.shape[0]
+            if item < 0 or item >= self.shape[0]:
+                raise IndexError(item)
+            return np.zeros(self.shape[1:], dtype=np.float32)
+
+        if isinstance(item, slice):
+            start, stop, step = item.indices(self.shape[0])
+            n_rows = max(0, (stop - start + (step - 1)) // step)
+        else:
+            n_rows = len(item)
+        return np.zeros((n_rows, self.shape[1], self.shape[2]), dtype=np.float32)
+
+
 class SequentialTensorBuilder:
     """Build 3D tensor [N, T, F] for LSTM from 2D tabular data.
 
@@ -27,6 +55,11 @@ class SequentialTensorBuilder:
             Numpy array of shape [N, seq_len, F].
         """
         n_samples, n_features = X.shape
+        if np.unique(entity_ids).size == n_samples:
+            print(f"  View 2 (Sequential): Unique entities; using lazy zero tensor "
+                  f"({n_samples}, {self.seq_len}, {n_features})")
+            return ZeroSequenceArray(n_samples, self.seq_len, n_features)
+
         sequences = np.zeros((n_samples, self.seq_len, n_features), dtype=np.float32)
         card_history = defaultdict(list)
         entity_ids = np.asarray(entity_ids)

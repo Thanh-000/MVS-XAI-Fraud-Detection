@@ -52,13 +52,6 @@ class TabularFeatureExtractor:
         for c in df.select_dtypes(include=['object', 'string']).columns:
             train_values = fit_frame[c].fillna("__MISSING__").astype(str)
             classes = pd.Index(train_values.unique())
-            mapping = {value: idx for idx, value in enumerate(classes)}
-            df[c] = (
-                df[c]
-                .fillna("__MISSING__")
-                .astype(str)
-                .map(mapping)
-                .fillna(-1)
-                .astype(np.int32)
-            )
+            values = df[c].fillna("__MISSING__").astype(str).to_numpy()
+            df[c] = classes.get_indexer(values).astype(np.int32)
         return df
