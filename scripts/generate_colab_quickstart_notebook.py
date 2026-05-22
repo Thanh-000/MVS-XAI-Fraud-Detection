@@ -23,7 +23,7 @@ def build_notebook():
     - installing dependencies
     - downloading IEEE-CIS and PaySim from pasted links
     - accepting direct HTTPS links or Google Drive share links
-    - running the full train pipeline for IEEE-CIS and PaySim
+    - running stable or full research training for IEEE-CIS and PaySim
     - regenerating the reviewer notebooks
 
     Practical note:
@@ -314,6 +314,46 @@ def build_notebook():
     print("PaySim file:", paysim_match.name)
     """
 
+    train_config_md = """
+    ## 5. Configure Training Mode
+
+    Choose one preset before launching a run:
+
+    - `tree`: most stable Colab-free path. Uses available tree models and disables MLP/LSTM.
+    - `auto`: uses every installed model family. On Colab with PyTorch installed this usually enables the full MVS stack.
+    - `full_mvs`: strict research mode. Fails early if PyTorch is unavailable.
+
+    Recommended workflow:
+
+    - first run `tree` to validate data paths and the end-to-end artifact path
+    - then switch to `auto` or `full_mvs` for the final research run if the runtime has enough memory/time
+    - keep `CTGAN_SAMPLES = 0` unless you have a long paid runtime; CTGAN is expensive on PaySim/IEEE-CIS
+    """
+
+    train_config_code = """
+    from pathlib import Path
+
+    TRAIN_PRESET = "tree"      # "tree", "auto", or "full_mvs"
+    DEVICE = "cuda"            # Colab GPU runtime; pipeline falls back to CPU when CUDA is unavailable
+    N_SPLITS = 5
+    GAP_SIZE = 1000
+    N_SEEDS = 1
+    SMOTE_STRATEGY = 0.30
+    CTGAN_SAMPLES = 0
+    CTGAN_EPOCHS = 30
+
+    # PaySim loader controls. Use None for full data; set a smaller integer for a faster trial run.
+    PAYSIM_CHUNK_SIZE = 750000
+    PAYSIM_MAX_ROWS = None
+    PAYSIM_STEP_BLOCK_SIZE = 24
+
+    ARTIFACTS_DIR = Path(RUNTIME_REPO_PATH) / "artifacts"
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    print("Training preset:", TRAIN_PRESET)
+    print("Artifacts directory:", ARTIFACTS_DIR)
+    """
+
     runner_code = """
     import os
     import re
@@ -352,11 +392,14 @@ def build_notebook():
     """
 
     run_md = """
-    ## 5. Run Full Training Pipeline
+    ## 6. Run Full Training Pipeline
 
     Use GPU runtime for the heaviest run if available:
 
     - `Runtime` -> `Change runtime type` -> `T4 GPU`
+
+    The command cells below use the training controls from the previous section.
+    For final academic runs, keep a copy of the log and the generated holdout CSV.
     """
 
     run_ieee_code = """
@@ -369,9 +412,25 @@ def build_notebook():
             "--data_dir",
             str(DATA_DIR),
             "--device",
-            "cuda",
+            DEVICE,
+            "--preset",
+            TRAIN_PRESET,
+            "--n_splits",
+            str(N_SPLITS),
+            "--gap_size",
+            str(GAP_SIZE),
+            "--n_seeds",
+            str(N_SEEDS),
+            "--smote_strategy",
+            str(SMOTE_STRATEGY),
+            "--ctgan_samples",
+            str(CTGAN_SAMPLES),
+            "--ctgan_epochs",
+            str(CTGAN_EPOCHS),
+            "--artifacts_dir",
+            str(ARTIFACTS_DIR),
         ],
-        log_path=Path(RUNTIME_REPO_PATH) / "artifacts" / "ieee_train.log",
+        log_path=ARTIFACTS_DIR / "ieee_train.log",
     )
     """
 
@@ -385,24 +444,121 @@ def build_notebook():
             "--data_dir",
             str(DATA_DIR),
             "--device",
-            "cuda",
+            DEVICE,
+            "--preset",
+            TRAIN_PRESET,
+            "--n_splits",
+            str(N_SPLITS),
+            "--gap_size",
+            str(GAP_SIZE),
+            "--n_seeds",
+            str(N_SEEDS),
+            "--smote_strategy",
+            str(SMOTE_STRATEGY),
+            "--ctgan_samples",
+            str(CTGAN_SAMPLES),
+            "--ctgan_epochs",
+            str(CTGAN_EPOCHS),
+            "--paysim_chunk_size",
+            str(PAYSIM_CHUNK_SIZE),
+            "--paysim_step_block_size",
+            str(PAYSIM_STEP_BLOCK_SIZE),
+            "--artifacts_dir",
+            str(ARTIFACTS_DIR),
+        ]
+        + ([] if PAYSIM_MAX_ROWS is None else ["--paysim_max_rows", str(PAYSIM_MAX_ROWS)]),
+        log_path=ARTIFACTS_DIR / "paysim_train.log",
+    )
+    """
+
+    smoke_md = """
+    ## 7. Optional Pipeline Smoke Test
+
+    This cell creates a tiny PaySim-like CSV under `/content/mvs_xai_smoke_data`
+    and runs the production pipeline with `--preset tree`.
+
+    Use it only to confirm that the Colab runtime and current repository revision can train end-to-end.
+    It is not an academic result.
+    """
+
+    smoke_code = """
+    import numpy as np
+    import pandas as pd
+
+    SMOKE_DATA_DIR = Path("/content/mvs_xai_smoke_data")
+    SMOKE_ARTIFACTS_DIR = Path(RUNTIME_REPO_PATH) / "artifacts_smoke"
+    SMOKE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SMOKE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    rng = np.random.default_rng(42)
+    n = 240
+    step = np.arange(n) // 4 + 1
+    types = np.array(["PAYMENT", "TRANSFER", "CASH_OUT", "DEBIT"])
+    type_col = types[np.arange(n) % len(types)]
+    amount = rng.lognormal(mean=4.8, sigma=0.55, size=n)
+    old_org = rng.uniform(100, 5000, size=n)
+    fraud = ((np.arange(n) % 9 == 0) | ((type_col == "TRANSFER") & (amount > np.quantile(amount, 0.82)))).astype(int)
+    new_org = np.maximum(old_org - amount * rng.uniform(0.1, 0.9, size=n), 0)
+    old_dest = rng.uniform(100, 10000, size=n)
+    new_dest = old_dest + amount * rng.uniform(0.05, 1.0, size=n)
+
+    pd.DataFrame(
+        {
+            "step": step,
+            "type": type_col,
+            "amount": amount,
+            "nameOrig": [f"C{i % 25:04d}" for i in range(n)],
+            "nameDest": [f"M{(i * 3) % 35:04d}" for i in range(n)],
+            "oldbalanceOrg": old_org,
+            "newbalanceOrig": new_org,
+            "oldbalanceDest": old_dest,
+            "newbalanceDest": new_dest,
+            "isFraud": fraud,
+        }
+    ).to_csv(SMOKE_DATA_DIR / "paysim.csv", index=False)
+
+    run_and_stream(
+        [
+            "python",
+            "main_train_pipeline.py",
+            "--dataset",
+            "paysim",
+            "--data_dir",
+            str(SMOKE_DATA_DIR),
+            "--device",
+            "cpu",
+            "--preset",
+            "tree",
+            "--n_splits",
+            "2",
+            "--gap_size",
+            "0",
+            "--test_ratio",
+            "0.2",
+            "--smote_strategy",
+            "0",
+            "--ctgan_samples",
+            "0",
+            "--paysim_chunk_size",
+            "0",
+            "--artifacts_dir",
+            str(SMOKE_ARTIFACTS_DIR),
         ],
-        log_path=Path(RUNTIME_REPO_PATH) / "artifacts" / "paysim_train.log",
+        log_path=SMOKE_ARTIFACTS_DIR / "paysim_smoke_train.log",
     )
     """
 
     results_md = """
-    ## 6. Review Results
+    ## 8. Review Results
 
     These cells summarize the latest run directly from saved artifacts and logs.
     Run the dataset-specific cell after the corresponding training cell completes.
     """
 
     results_helper_code = """
+    import re
     import pandas as pd
     from pathlib import Path
-
-    ARTIFACTS_DIR = Path(RUNTIME_REPO_PATH) / "artifacts"
 
     def _last_match(pattern, text):
         matches = re.findall(pattern, text, flags=re.MULTILINE)
@@ -458,7 +614,7 @@ def build_notebook():
     """
 
     regenerate_md = """
-    ## 7. Regenerate Reviewer Notebooks
+    ## 9. Regenerate Reviewer Notebooks
 
     These commands rebuild the two reviewer-facing notebook artifacts using the downloaded files under `data/`.
     """
@@ -477,7 +633,7 @@ def build_notebook():
     """
 
     export_md = """
-    ## 8. Export Results
+    ## 10. Export Results
 
     This bundles notebooks and artifacts into a zip and downloads it to your browser.
     """
@@ -507,7 +663,9 @@ def build_notebook():
     - IEEE-CIS Kaggle `test` is not used by the research pipeline because it does not include `isFraud` labels. The repo evaluates on temporal holdouts carved from the labeled `train` split instead.
     - If CUDA is unavailable, change `--device cuda` to `--device cpu`.
     - If the optional CuPy install fails, the notebook can still run; only the XGBoost GPU prediction warning mitigation will be unavailable.
-    - If full IEEE-CIS kills the Colab runtime, reduce the model set or split count before rerunning.
+    - If full IEEE-CIS kills the Colab runtime, set `TRAIN_PRESET = "tree"` and reduce `N_SPLITS` before rerunning.
+    - If you need the strict full research stack, set `TRAIN_PRESET = "full_mvs"` after confirming PyTorch is installed.
+    - If a run fails late while writing outputs, set `ARTIFACTS_DIR` to a fresh folder so smoke artifacts and final artifacts remain separate.
     """
 
     notebook = new_notebook(
@@ -529,10 +687,14 @@ def build_notebook():
             new_markdown_cell(textwrap.dedent(dataset_validate_md).strip()),
             new_code_cell(textwrap.dedent(ieee_validate_code).strip()),
             new_code_cell(textwrap.dedent(paysim_validate_code).strip()),
+            new_markdown_cell(textwrap.dedent(train_config_md).strip()),
+            new_code_cell(textwrap.dedent(train_config_code).strip()),
             new_code_cell(textwrap.dedent(runner_code).strip()),
             new_markdown_cell(textwrap.dedent(run_md).strip()),
             new_code_cell(textwrap.dedent(run_ieee_code).strip()),
             new_code_cell(textwrap.dedent(run_paysim_code).strip()),
+            new_markdown_cell(textwrap.dedent(smoke_md).strip()),
+            new_code_cell(textwrap.dedent(smoke_code).strip()),
             new_markdown_cell(textwrap.dedent(results_md).strip()),
             new_code_cell(textwrap.dedent(results_helper_code).strip()),
             new_code_cell(textwrap.dedent(ieee_results_code).strip()),

@@ -10,6 +10,13 @@ import numpy as np
 class DriftDetector:
     """Detect concept drift using Wasserstein (Earth Mover's) Distance."""
 
+    @staticmethod
+    def _print_table(df):
+        try:
+            print(df.to_markdown(index=False))
+        except ImportError:
+            print(df.to_string(index=False))
+
     def calculate_drift(self, df_train, df_test, feature_cols, warning_threshold=0.1):
         """Compute Wasserstein distance per feature between train and test.
 
@@ -45,7 +52,7 @@ class DriftDetector:
 
         if n_drift > 0:
             print(f"\n  Top 10 drifted features:")
-            print(drift_df.head(10).to_markdown(index=False))
+            self._print_table(drift_df.head(10))
 
         return drift_df
 

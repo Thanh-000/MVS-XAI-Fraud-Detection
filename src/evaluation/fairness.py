@@ -6,6 +6,13 @@ class FairnessAuditor:
     """Audit model fairness across protected groups."""
 
     @staticmethod
+    def _print_table(df):
+        try:
+            print(df.to_markdown(index=False))
+        except ImportError:
+            print(df.to_string(index=False))
+
+    @staticmethod
     def _block_rate(subset, pred_col):
         if len(subset) == 0:
             return 0.0
@@ -34,7 +41,7 @@ class FairnessAuditor:
 
         report_df = pd.DataFrame(report)
         if not report_df.empty:
-            print(report_df.to_markdown(index=False))
+            self._print_table(report_df)
 
         disparity = 0.0
         if len(report) >= 2:
@@ -81,7 +88,7 @@ class FairnessAuditor:
 
         report_df = pd.DataFrame(report)
         if not report_df.empty:
-            print(report_df.to_markdown(index=False))
+            self._print_table(report_df)
 
         tpr_disparity = 0.0
         fpr_disparity = 0.0

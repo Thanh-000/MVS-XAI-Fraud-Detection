@@ -4,7 +4,6 @@ Matches notebook 06 — time-based features and NaN cleanup.
 """
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder
 
 
 class TabularFeatureExtractor:
@@ -22,18 +21,44 @@ class TabularFeatureExtractor:
         return df
 
     @staticmethod
-    def clean_high_nan_columns(df, threshold=0.7):
-        """Drop columns with NaN ratio above threshold."""
-        nan_ratio = df.isnull().mean()
+    def clean_high_nan_columns(df, threshold=0.7, fit_idx=None, preserve_cols=None):
+        """Drop columns with NaN ratio above threshold using train-only fit rows."""
+        if fit_idx is None:
+            fit_frame = df
+        else:
+            fit_frame = df.iloc[fit_idx]
+
+        preserve_cols = set(preserve_cols or [])
+        nan_ratio = fit_frame.isnull().mean()
         good_cols = nan_ratio[nan_ratio < threshold].index.tolist()
+        good_cols = list(dict.fromkeys(good_cols + [c for c in preserve_cols if c in df.columns]))
         n_dropped = len(df.columns) - len(good_cols)
         df = df[good_cols]
-        print(f"  NaN cleanup: kept {len(good_cols)} columns (dropped {n_dropped} with NaN > {threshold*100:.0f}%)")
+        scope = "train slice" if fit_idx is not None else "full data"
+        print(
+            f"  NaN cleanup: kept {len(good_cols)} columns "
+            f"(dropped {n_dropped} with NaN > {threshold*100:.0f}%, fit={scope})"
+        )
         return df
 
     @staticmethod
-    def encode_categoricals(df):
-        """Label-encode all object/string columns."""
-        for c in df.select_dtypes(include=['object']).columns:
-            df[c] = LabelEncoder().fit_transform(df[c].astype(str))
+    def encode_categoricals(df, fit_idx=None):
+        """Label-encode object/string columns with mappings learned on fit rows only."""
+        if fit_idx is None:
+            fit_frame = df
+        else:
+            fit_frame = df.iloc[fit_idx]
+
+        for c in df.select_dtypes(include=['object', 'string']).columns:
+            train_values = fit_frame[c].fillna("__MISSING__").astype(str)
+            classes = pd.Index(train_values.unique())
+            mapping = {value: idx for idx, value in enumerate(classes)}
+            df[c] = (
+                df[c]
+                .fillna("__MISSING__")
+                .astype(str)
+                .map(mapping)
+                .fillna(-1)
+                .astype(np.int32)
+            )
         return df

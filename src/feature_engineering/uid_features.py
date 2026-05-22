@@ -132,19 +132,26 @@ class UIDFeatureEngineer:
         return df
 
     @staticmethod
-    def v_column_pca(df, n_components=3):
+    def v_column_pca(df, n_components=3, fit_idx=None):
         """Group anonymous V-columns by NaN pattern, then PCA per group.
 
         V1–V339 are anonymous features with correlated groups sharing
         similar NaN patterns. PCA reduces dimensionality while preserving signal.
+        PCA groups and components are fitted on the training slice when fit_idx
+        is provided, then transformed across the full temporal frame.
         """
         v_cols = [c for c in df.columns if c.startswith('V') and c[1:].isdigit()]
         if len(v_cols) < 10:
             print(f"  V-PCA: Skipped (only {len(v_cols)} V-columns)")
             return df
 
+        fit_positions = np.asarray(fit_idx, dtype=int) if fit_idx is not None else np.arange(len(df))
+        if len(fit_positions) == 0:
+            print("  V-PCA: Skipped (empty fit slice)")
+            return df
+
         # Group V-columns by NaN pattern
-        nan_patterns = df[v_cols].isnull().astype(int)
+        nan_patterns = df.iloc[fit_positions][v_cols].isnull().astype(int)
         pattern_groups = {}
         for col in v_cols:
             pattern_key = tuple(nan_patterns[col].values[:100])  # Sample for efficiency
@@ -156,18 +163,21 @@ class UIDFeatureEngineer:
         for gi, (_, group_cols) in enumerate(pattern_groups.items()):
             if len(group_cols) < n_components:
                 continue
-            sub = df[group_cols].fillna(0).values
-            n_comp = min(n_components, len(group_cols), sub.shape[0])
+            fit_sub = df.iloc[fit_positions][group_cols].fillna(0).values
+            all_sub = df[group_cols].fillna(0).values
+            n_comp = min(n_components, len(group_cols), fit_sub.shape[0])
             pca = PCA(n_components=n_comp, random_state=42)
-            pca_result = pca.fit_transform(sub)
+            pca.fit(fit_sub)
+            pca_result = pca.transform(all_sub)
             for pc_i in range(n_comp):
                 df[f'V_PCA_g{gi}_pc{pc_i}'] = pca_result[:, pc_i]
             n_pca_features += n_comp
 
         # Drop original V-columns to reduce noise
         df.drop(columns=v_cols, inplace=True, errors='ignore')
+        scope = "train slice" if fit_idx is not None else "full data"
         print(f"  V-PCA: {len(v_cols)} V-columns -> {n_pca_features} PCA components "
-              f"({len(pattern_groups)} groups)")
+              f"({len(pattern_groups)} groups, fit={scope})")
         return df
 
     @staticmethod
@@ -196,7 +206,7 @@ class UIDFeatureEngineer:
         return df
 
     @classmethod
-    def apply_all(cls, df, dataset_name='ieee'):
+    def apply_all(cls, df, dataset_name='ieee', fit_idx=None):
         """Apply all Kaggle Winner feature engineering steps sequentially.
 
         Pipeline: build_uid → uid_aggregations → d_diffs (in agg) →
@@ -213,7 +223,7 @@ class UIDFeatureEngineer:
 
         df = cls.build_uid(df)
         df = cls.uid_aggregations(df)
-        df = cls.v_column_pca(df)
+        df = cls.v_column_pca(df, fit_idx=fit_idx)
         df = cls.cross_feature_interactions(df)
         df = cls.new_client_flag(df)
 

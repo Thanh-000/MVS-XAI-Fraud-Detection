@@ -19,9 +19,11 @@ Evaluated through a dual-benchmark workflow spanning **IEEE-CIS Fraud Detection*
 - The main training entry point now supports `--dataset ieee` and `--dataset paysim`.
 - Reviewer notebook artifacts are available for both **IEEE-CIS** and **PaySim**.
 - **ULB Credit Card Fraud** is still not packaged in this repository.
-- The main notebook is designed to be **submission-safe**:
-  - If IEEE-CIS CSVs are available under `data/`, it can be rerun on the real dataset.
-  - If the CSVs are absent, the committed notebook still executes a synthetic smoke-test so reviewers can see metrics, plots, XAI output, and HITL routing rather than an empty notebook.
+- The current reviewer notebooks are designed as **full academic experiment artifacts**:
+  - They clone the working repository revision when needed.
+  - They download IEEE-CIS and PaySim directly with `aria2c` signed URLs.
+  - They run the real datasets end to end through `main_train_pipeline.py`.
+  - They do not mount Google Drive and do not use generated-data fallbacks.
 
 ## Architecture
 
@@ -183,8 +185,8 @@ probas = meta.predict_proba(test_matrix)
 Reviewer notebooks:
 
 - Colab setup helper: [notebooks/00_Colab_Quickstart.ipynb](notebooks/00_Colab_Quickstart.ipynb)
-- IEEE-focused artifact: [notebooks/06_MVS_XAI_Ultimate_IEEE_CIS.ipynb](notebooks/06_MVS_XAI_Ultimate_IEEE_CIS.ipynb)
-- PaySim-focused artifact: [notebooks/07_MVS_XAI_PaySim.ipynb](notebooks/07_MVS_XAI_PaySim.ipynb)
+- IEEE-CIS case-study artifact: [notebooks/06_MVS_XAI_Ultimate_IEEE_CIS.ipynb](notebooks/06_MVS_XAI_Ultimate_IEEE_CIS.ipynb)
+- PaySim case-study artifact: [notebooks/07_MVS_XAI_PaySim.ipynb](notebooks/07_MVS_XAI_PaySim.ipynb)
 
 The Colab quickstart notebook supports both setup paths:
 

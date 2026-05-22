@@ -29,8 +29,10 @@ class BehavioralExtractor:
             df[f'Card_Amt_Std_{label}'] = df.groupby('card1')['TransactionAmt'].transform(
                 lambda x: x.rolling(window, min_periods=2).std())
 
-        # Spending velocity (count of txns in window)
-        df['Card_Tx_Count'] = df.groupby('card1')['TransactionAmt'].transform('count')
+        # Spending velocity (count of txns observed so far). Do not use
+        # transform('count'), which would reveal future transactions per card.
+        prior_count = df.groupby('card1').cumcount()
+        df['Card_Tx_Count'] = prior_count + 1
         df['Card_Spending_Velocity'] = df.groupby('card1')['TransactionAmt'].transform(
             lambda x: x.rolling(10, min_periods=1).count())
 
@@ -40,8 +42,8 @@ class BehavioralExtractor:
         )
         df['Amt_to_Mean_Ratio'] = df['TransactionAmt'] / (df['Card_Velocity_30d'] + 1)
 
-        # Cold-start detection: cumulative count per card
-        df['Card_Prior_Txn_Count'] = df.groupby('card1').cumcount()
+        # Cold-start detection: cumulative count per card before this transaction
+        df['Card_Prior_Txn_Count'] = prior_count
         n_cold = (df['Card_Prior_Txn_Count'] < 3).sum()
         print(f"    Cold-start accounts (<3 txns): {n_cold:,} transactions")
 

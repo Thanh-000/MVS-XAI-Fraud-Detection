@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import argparse
 import gc
+import importlib.util
+import json
 import random
+from types import SimpleNamespace
 import time
 from pathlib import Path
 
@@ -42,8 +45,6 @@ from src.feature_engineering.view_behavioral import BehavioralExtractor
 from src.feature_engineering.view_sequential import SequentialTensorBuilder
 from src.feature_engineering.view_tabular import TabularFeatureExtractor
 from src.models.base_trees import TreeEnsembleFactory
-from src.models.nn_focal_mlp import train_mlp_focal
-from src.models.nn_lstm import train_lstm_fold
 from src.ops_pipeline.hitl_router import HITLRouter
 from src.xai import UltimateXAIAuditor
 
@@ -54,46 +55,79 @@ def print_section(title):
     print("=" * 60)
 
 
-def set_global_seed(seed):
-    """Seed Python, NumPy, and Torch for reproducible multi-seed evaluation."""
+def module_available(module_name):
+    return importlib.util.find_spec(module_name) is not None
+
+
+def resolve_device(requested_device):
+    """Return a torch device when torch exists, otherwise a CPU-like shim."""
+    if not module_available("torch"):
+        print("  PyTorch is not installed; neural branches will be unavailable.")
+        return SimpleNamespace(type="cpu")
+
     import torch
+
+    return torch.device(requested_device if torch.cuda.is_available() else "cpu")
+
+
+def set_global_seed(seed):
+    """Seed Python, NumPy, and Torch when available."""
 
     random.seed(seed)
     np.random.seed(seed)
+    if not module_available("torch"):
+        return
+
+    import torch
+
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
 
-def build_feature_frame(df, dataset):
+def build_feature_frame(df, dataset, fit_idx=None):
     df = TabularFeatureExtractor.extract_time_features(df)
-    df = TabularFeatureExtractor.encode_categoricals(df)
-    df = UIDFeatureEngineer.apply_all(df, dataset_name=dataset)
+    df = TabularFeatureExtractor.encode_categoricals(df, fit_idx=fit_idx)
+    df = UIDFeatureEngineer.apply_all(df, dataset_name=dataset, fit_idx=fit_idx)
     df = BehavioralExtractor.engineer_velocity(df)
-    df = TabularFeatureExtractor.clean_high_nan_columns(df, threshold=0.7)
+    df = TabularFeatureExtractor.clean_high_nan_columns(
+        df,
+        threshold=0.7,
+        fit_idx=fit_idx,
+        preserve_cols=["isFraud", "TransactionID", "TransactionDT", "UID"],
+    )
     return df
 
 
-def get_active_model_names(device_type, seed):
+def get_active_model_names(device_type, seed, preset="auto"):
+    if preset not in {"auto", "tree", "full_mvs"}:
+        raise ValueError("preset must be one of: auto, tree, full_mvs")
+
     model_builders = {
         "RF": lambda: TreeEnsembleFactory.get_random_forest(seed=seed),
         "XGB": lambda: TreeEnsembleFactory.get_xgboost(use_gpu=(device_type == "cuda"), seed=seed),
         "LGB": lambda: TreeEnsembleFactory.get_lightgbm(seed=seed),
         "CAT": lambda: TreeEnsembleFactory.get_catboost(use_gpu=(device_type == "cuda"), seed=seed),
-        "MLP": None,
-        "LSTM": None,
     }
 
     active = []
     for model_name, builder in model_builders.items():
-        if builder is None:
-            active.append(model_name)
-            continue
         try:
             builder()
             active.append(model_name)
         except Exception as exc:
             print(f"  Skipping {model_name}: {exc}")
+
+    if preset == "tree":
+        print("  Preset 'tree': neural branches disabled for stable production-style training.")
+        return active
+
+    if module_available("torch"):
+        active.extend(["MLP", "LSTM"])
+    elif preset == "full_mvs":
+        raise ImportError("Preset 'full_mvs' requires PyTorch. Install torch or use --preset auto/tree.")
+    else:
+        print("  Skipping MLP/LSTM: PyTorch is not installed.")
     return active
 
 
@@ -295,9 +329,9 @@ def run_meta_xai_audit(background_matrix, explain_matrix, fraud_scores, model_na
     return {"results": results, "harness": harness_metrics, "instance_index": top_idx}
 
 
-def save_holdout_artifacts(dataset, holdout_frame, fraud_scores, decisions):
-    artifacts_dir = Path("artifacts")
-    artifacts_dir.mkdir(exist_ok=True)
+def save_holdout_artifacts(dataset, holdout_frame, fraud_scores, decisions, artifacts_dir="artifacts"):
+    artifacts_dir = Path(artifacts_dir)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
     output_path = artifacts_dir / f"{dataset}_holdout_predictions.csv"
 
     saved = holdout_frame.copy()
@@ -305,6 +339,51 @@ def save_holdout_artifacts(dataset, holdout_frame, fraud_scores, decisions):
     saved["decision"] = decisions
     saved.to_csv(output_path, index=False)
     print(f"\n  Saved holdout predictions to: {output_path.resolve()}")
+
+
+def _compact_seed_result(result):
+    keys = [
+        "seed",
+        "gated_auc",
+        "ungated_auc",
+        "smoothed_auc",
+        "smoothed_f1",
+        "mcnemar_p",
+        "latency_ms",
+        "meta_train_auc",
+        "meta_raw_train_auc",
+    ]
+    compact = {}
+    for key in keys:
+        value = result.get(key)
+        if isinstance(value, (np.integer, np.floating)):
+            value = value.item()
+        compact[key] = value
+    return compact
+
+
+def save_metrics_summary(dataset, preset, seed_results, artifacts_dir="artifacts"):
+    artifacts_dir = Path(artifacts_dir)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    compact_results = [_compact_seed_result(result) for result in seed_results]
+
+    summary = {
+        "dataset": dataset,
+        "preset": preset,
+        "n_seeds": len(compact_results),
+        "results": compact_results,
+    }
+
+    if len(compact_results) > 1:
+        for metric in ["gated_auc", "ungated_auc", "smoothed_auc", "smoothed_f1", "latency_ms"]:
+            values = np.array([row[metric] for row in compact_results], dtype=float)
+            summary[f"{metric}_mean"] = float(values.mean())
+            summary[f"{metric}_std"] = float(values.std(ddof=1))
+
+    output_path = artifacts_dir / f"{dataset}_metrics_summary.json"
+    output_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(f"\n  Saved metrics summary to: {output_path.resolve()}")
+    return summary
 
 
 def benchmark_decision_latency(
@@ -317,7 +396,6 @@ def benchmark_decision_latency(
     feature_names,
 ):
     """Measure single-transaction decision latency after feature extraction."""
-    import torch
 
     if not final_models:
         return {"median_ms": float("nan"), "target_met": False}
@@ -352,6 +430,8 @@ def benchmark_decision_latency(
         _ = float(meta_model.predict_proba(stacked)[0])
 
         if device.type == "cuda":
+            import torch
+
             torch.cuda.synchronize()
         timings_ms.append((time.perf_counter() - start) * 1000.0)
 
@@ -373,19 +453,33 @@ def run_single_seed(
     smote_strategy=0.30,
     ctgan_samples=0,
     ctgan_epochs=30,
+    paysim_chunk_size=750000,
+    paysim_max_rows=None,
+    paysim_step_block_size=24,
+    preset="auto",
+    artifacts_dir="artifacts",
 ):
-    import torch
-
     set_global_seed(seed)
-    device = torch.device(device if torch.cuda.is_available() else "cpu")
+    device = resolve_device(device)
     print("=== MVS-XAI Pipeline v4.4.0 ===")
     print(f"Device: {device}")
     print(f"Dataset: {dataset}")
     print(f"Seed: {seed}")
+    print(f"Preset: {preset}")
 
     print_section("PHASE 1: Data Loading and Feature Engineering")
-    df = DataLoader.load_dataset(data_dir, dataset=dataset)
-    df = build_feature_frame(df, dataset=dataset)
+    loader_kwargs = {}
+    if dataset == "paysim":
+        loader_kwargs = {
+            "chunk_size": paysim_chunk_size,
+            "max_rows": paysim_max_rows,
+            "step_block_size": paysim_step_block_size,
+        }
+    df_raw = DataLoader.load_dataset(data_dir, dataset=dataset, **loader_kwargs)
+    splitter = TemporalSplitter(n_splits=n_splits, gap_size=gap_size)
+    train_idx, holdout_idx = splitter.split_holdout(df_raw, test_ratio=test_ratio)
+
+    df = build_feature_frame(df_raw, dataset=dataset, fit_idx=train_idx)
 
     y = df["isFraud"].values
     base_drop_cols = ["isFraud", "TransactionID", "TransactionDT", "UID"]
@@ -396,16 +490,13 @@ def run_single_seed(
     print(f"\n  Final dataset: {X.shape[0]:,} samples x {X.shape[1]} features")
     print(f"  Fraud rate: {y.mean() * 100:.2f}%")
 
-    splitter = TemporalSplitter(n_splits=n_splits, gap_size=gap_size)
-    train_idx, holdout_idx = splitter.split_holdout(X, test_ratio=test_ratio)
-
     X_train_all, X_holdout = X[train_idx], X[holdout_idx]
     y_train_all, y_holdout = y[train_idx], y[holdout_idx]
     entity_train_all, entity_holdout = entity_ids[train_idx], entity_ids[holdout_idx]
     df_train_all = df.iloc[train_idx].reset_index(drop=True)
     df_holdout = df.iloc[holdout_idx].reset_index(drop=True)
 
-    active_models = get_active_model_names(device.type, seed)
+    active_models = get_active_model_names(device.type, seed, preset=preset)
     if len(active_models) < 2:
         raise RuntimeError("Need at least two active base models to run the stacker.")
 
@@ -413,7 +504,7 @@ def run_single_seed(
 
     print_section("PHASE 2: Walk-Forward CV on Training Slice")
     oof_train_predictions = {
-        model_name: np.zeros(len(X_train_all), dtype=float) for model_name in active_models
+        model_name: np.full(len(X_train_all), np.nan, dtype=float) for model_name in active_models
     }
 
     fold_count = 0
@@ -453,6 +544,8 @@ def run_single_seed(
             oof_train_predictions[model_name][fold_val_idx] = preds
 
         if "MLP" in active_models:
+            from src.models.nn_focal_mlp import train_mlp_focal
+
             mlp_preds, _ = train_mlp_focal(
                 X_trn_scaled,
                 y_trn,
@@ -464,6 +557,8 @@ def run_single_seed(
             oof_train_predictions["MLP"][fold_val_idx] = mlp_preds
 
         if "LSTM" in active_models:
+            from src.models.nn_lstm import train_lstm_fold
+
             X_trn_seq, X_val_seq = build_sequence_train_val(
                 X_trn_scaled, X_val_scaled, entity_trn, entity_val
             )
@@ -483,18 +578,36 @@ def run_single_seed(
         raise RuntimeError("Temporal CV produced zero folds. Increase dataset size or reduce the gap/test ratio.")
 
     print_section("PHASE 3: Meta-Learner Fit on Training OOF")
-    raw_train_oof_matrix = np.column_stack([oof_train_predictions[name] for name in active_models])
+    oof_mask = np.ones(len(X_train_all), dtype=bool)
+    for preds in oof_train_predictions.values():
+        oof_mask &= np.isfinite(preds)
+
+    n_oof = int(oof_mask.sum())
+    n_missing_oof = int(len(oof_mask) - n_oof)
+    print(f"\n  OOF-covered rows: {n_oof:,} / {len(oof_mask):,}")
+    if n_missing_oof:
+        print(f"  Excluding {n_missing_oof:,} early training rows without OOF predictions")
+    if n_oof == 0 or np.unique(y_train_all[oof_mask]).size < 2:
+        raise RuntimeError("Not enough valid OOF rows from temporal CV to fit the meta-learner.")
+
+    y_train_meta = y_train_all[oof_mask]
+    df_train_meta = df_train_all.iloc[oof_mask].reset_index(drop=True)
+    oof_meta_predictions = {
+        name: oof_train_predictions[name][oof_mask] for name in active_models
+    }
+
+    raw_train_oof_matrix = np.column_stack([oof_meta_predictions[name] for name in active_models])
     gating = ConfidenceGating(tau=0.60)
-    gated_train_predictions, gate_weights = gating.apply_gating(y_train_all, oof_train_predictions)
+    gated_train_predictions, gate_weights = gating.apply_gating(y_train_meta, oof_meta_predictions)
     train_oof_matrix = np.column_stack([gated_train_predictions[name] for name in active_models])
     print(f"\n  Train OOF matrix shape: {train_oof_matrix.shape}")
 
     meta = MetaEnsembler(C=0.01, seed=seed)
-    meta.fit(train_oof_matrix, y_train_all, feature_names=active_models)
-    meta_train_result = meta.evaluate(train_oof_matrix, y_train_all)
+    meta.fit(train_oof_matrix, y_train_meta, feature_names=active_models)
+    meta_train_result = meta.evaluate(train_oof_matrix, y_train_meta)
     meta_raw = MetaEnsembler(C=0.01, seed=seed)
-    meta_raw.fit(raw_train_oof_matrix, y_train_all, feature_names=active_models)
-    meta_raw_train_result = meta_raw.evaluate(raw_train_oof_matrix, y_train_all)
+    meta_raw.fit(raw_train_oof_matrix, y_train_meta, feature_names=active_models)
+    meta_raw_train_result = meta_raw.evaluate(raw_train_oof_matrix, y_train_meta)
 
     print_section("PHASE 3.5: Final Base-Model Fit and Holdout Prediction")
     holdout_base_predictions = {
@@ -544,6 +657,8 @@ def run_single_seed(
         holdout_base_predictions[model_name] = final_model.predict_proba(holdout_tree_input)[:, 1]
 
     if "MLP" in active_models:
+        from src.models.nn_focal_mlp import train_mlp_focal
+
         _, mlp_model = train_mlp_focal(
             X_train_scaled_full,
             y_final_train,
@@ -557,6 +672,8 @@ def run_single_seed(
 
     X_holdout_seq = None
     if "LSTM" in active_models:
+        from src.models.nn_lstm import train_lstm_fold
+
         X_final_train_seq, X_final_val_seq = build_sequence_train_val(
             X_train_scaled_full, X_val_scaled_full, entity_final_train, entity_final_val
         )
@@ -586,13 +703,14 @@ def run_single_seed(
 
     print_section("PHASE 4: Holdout Evaluation and Post-Processing")
     evaluator = ModelEvaluator(y_holdout)
+    threshold_evaluator = ModelEvaluator(y_train_meta)
     print("\n  --- Gated Holdout Meta-Learner ---")
-    gated_threshold = evaluator.find_optimal_threshold(gated_holdout_probas)
+    gated_threshold = threshold_evaluator.find_optimal_threshold(meta_train_result["probabilities"])
     evaluator.print_comprehensive_report(gated_holdout_probas, threshold=gated_threshold)
     gated_metrics = evaluator.compute_metrics(gated_holdout_probas, threshold=gated_threshold)
 
     print("\n  --- Ungated Holdout Meta-Learner ---")
-    ungated_threshold = evaluator.find_optimal_threshold(ungated_holdout_probas)
+    ungated_threshold = threshold_evaluator.find_optimal_threshold(meta_raw_train_result["probabilities"])
     evaluator.print_comprehensive_report(ungated_holdout_probas, threshold=ungated_threshold)
     ungated_metrics = evaluator.compute_metrics(ungated_holdout_probas, threshold=ungated_threshold)
 
@@ -603,14 +721,21 @@ def run_single_seed(
     )
     smoothed_holdout_probas = holdout_result["fraud_score"].values
 
+    train_oof_result = df_train_meta[["UID"]].copy()
+    train_oof_result["fraud_score"] = meta_train_result["probabilities"]
+    train_oof_result = UIDPostProcessor.uid_average_predictions(
+        train_oof_result, pred_col="fraud_score", uid_col="UID", blend_ratio=0.7
+    )
+    smoothed_train_oof_probas = train_oof_result["fraud_score"].values
+
     print("\n  --- Holdout After UID Smoothing ---")
-    smooth_threshold = evaluator.find_optimal_threshold(smoothed_holdout_probas)
+    smooth_threshold = threshold_evaluator.find_optimal_threshold(smoothed_train_oof_probas)
     evaluator.print_comprehensive_report(smoothed_holdout_probas, threshold=smooth_threshold)
     smoothed_metrics = evaluator.compute_metrics(smoothed_holdout_probas, threshold=smooth_threshold)
 
     print_section("PHASE 4.2: Ablation and Drift")
     ablation = AblationStudy()
-    ablation.run_leave_one_out(gated_train_predictions, y_train_all, active_models)
+    ablation.run_leave_one_out(gated_train_predictions, y_train_meta, active_models)
 
     psi = PSIDriftMonitor()
     psi.monitor_features(X_train_all, X_holdout, feature_cols)
@@ -652,8 +777,8 @@ def run_single_seed(
 
     mcnemar = mcnemar_test(
         y_holdout,
-        (gated_holdout_probas >= 0.5).astype(int),
-        (ungated_holdout_probas >= 0.5).astype(int),
+        (gated_holdout_probas >= gated_threshold).astype(int),
+        (ungated_holdout_probas >= ungated_threshold).astype(int),
     )
     print_section("PHASE 4.4: Statistical Comparison")
     print("  Gated vs Ungated McNemar:")
@@ -679,6 +804,7 @@ def run_single_seed(
         holdout_frame=df_holdout[["TransactionID", "UID", "isFraud"]],
         fraud_scores=smoothed_holdout_probas,
         decisions=routed_holdout["decision"].values,
+        artifacts_dir=artifacts_dir,
     )
 
     print("\n=== Pipeline Complete ===")
@@ -710,10 +836,20 @@ def main(
     smote_strategy=0.30,
     ctgan_samples=0,
     ctgan_epochs=30,
+    paysim_chunk_size=750000,
+    paysim_max_rows=None,
+    paysim_step_block_size=24,
+    preset="auto",
+    artifacts_dir="artifacts",
 ):
     seed_results = []
     for seed_offset in range(n_seeds):
         current_seed = seed + seed_offset
+        seed_artifacts_dir = (
+            Path(artifacts_dir) / f"seed_{current_seed}"
+            if n_seeds > 1
+            else Path(artifacts_dir)
+        )
         seed_results.append(
             run_single_seed(
                 data_dir=data_dir,
@@ -726,6 +862,11 @@ def main(
                 smote_strategy=smote_strategy,
                 ctgan_samples=ctgan_samples,
                 ctgan_epochs=ctgan_epochs,
+                paysim_chunk_size=paysim_chunk_size,
+                paysim_max_rows=paysim_max_rows,
+                paysim_step_block_size=paysim_step_block_size,
+                preset=preset,
+                artifacts_dir=seed_artifacts_dir,
             )
         )
 
@@ -749,6 +890,12 @@ def main(
         print(f"    Cohen's d: {d_value:.4f}")
         print(f"    Paired t-test: statistic={ttest['statistic']:.4f} p-value={ttest['p_value']:.4f}")
 
+    save_metrics_summary(
+        dataset=dataset,
+        preset=preset,
+        seed_results=seed_results,
+        artifacts_dir=artifacts_dir,
+    )
     return seed_results
 
 
@@ -765,6 +912,11 @@ if __name__ == "__main__":
     parser.add_argument("--smote_strategy", type=float, default=0.30)
     parser.add_argument("--ctgan_samples", type=int, default=0)
     parser.add_argument("--ctgan_epochs", type=int, default=30)
+    parser.add_argument("--paysim_chunk_size", type=int, default=750000)
+    parser.add_argument("--paysim_max_rows", type=int, default=None)
+    parser.add_argument("--paysim_step_block_size", type=int, default=24)
+    parser.add_argument("--preset", type=str, default="auto", choices=["auto", "tree", "full_mvs"])
+    parser.add_argument("--artifacts_dir", type=str, default="artifacts")
     args = parser.parse_args()
 
     main(
@@ -779,4 +931,9 @@ if __name__ == "__main__":
         smote_strategy=args.smote_strategy,
         ctgan_samples=args.ctgan_samples,
         ctgan_epochs=args.ctgan_epochs,
+        paysim_chunk_size=args.paysim_chunk_size,
+        paysim_max_rows=args.paysim_max_rows,
+        paysim_step_block_size=args.paysim_step_block_size,
+        preset=args.preset,
+        artifacts_dir=args.artifacts_dir,
     )

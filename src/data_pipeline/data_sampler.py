@@ -4,7 +4,12 @@ Handles extreme class imbalance (3.5% fraud rate → target 30%).
 """
 import pandas as pd
 import numpy as np
-from imblearn.over_sampling import SMOTE, KMeansSMOTE
+
+try:
+    from imblearn.over_sampling import SMOTE, KMeansSMOTE
+except ImportError:
+    SMOTE = None
+    KMeansSMOTE = None
 
 try:
     from sdv.single_table import CTGANSynthesizer
@@ -37,6 +42,9 @@ class DataBalanceEngine:
         Returns:
             Resampled (X, y) tuple.
         """
+        if KMeansSMOTE is None or SMOTE is None:
+            raise ImportError("KMeansSMOTE/SMOTE requires imbalanced-learn: pip install imbalanced-learn")
+
         print(f"  KMeansSMOTE (strategy={strategy})...")
         try:
             sampler = KMeansSMOTE(
