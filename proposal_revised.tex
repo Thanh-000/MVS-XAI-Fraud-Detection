@@ -498,6 +498,41 @@ C$'$ & C + Behavioral          & Tab+Seq+Beh & 0.939 & 0.882 \\
 \end{enumerate}
 
 % ============================================================
+\section{Preliminary IEEE-CIS Experimental Results}
+
+The IEEE-CIS experiment was executed as a full end-to-end notebook run using the MVS-XAI v2 full configuration with temporal holdout evaluation, five walk-forward OOF folds, a gap of 1{,}000 transactions, and three independent seeds ($42$, $43$, and $44$). The training artifact records 590{,}540 merged transactions, 130 final model features after leakage-safe feature cleaning, and 87{,}581 holdout transactions. Table~\ref{tab:ieee_results} reports the seed-level and aggregate results produced by the notebook artifact \texttt{ieee\_metrics\_summary.json}.
+
+\begin{table}[H]
+\centering
+\caption{IEEE-CIS holdout results across three seeds.}
+\label{tab:ieee_results}
+{\scriptsize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabularx}{\columnwidth}{@{}lccccc@{}}
+\toprule
+Seed & Gated AUC & Ungated AUC & UID AUC & UID F1 & Latency ms \\
+\midrule
+42 & 0.9050 & 0.9050 & 0.9058 & 0.5228 & 92.42 \\
+43 & 0.9055 & 0.9055 & 0.9064 & 0.5277 & 80.12 \\
+44 & 0.9084 & 0.9084 & 0.9089 & 0.5226 & 84.87 \\
+\midrule
+Mean & 0.9063 & 0.9063 & 0.9071 & 0.5244 & 85.80 \\
+Std. & 0.0019 & 0.0019 & 0.0017 & 0.0029 & 6.20 \\
+\bottomrule
+\end{tabularx}
+}
+\end{table}
+
+The results indicate stable fraud-risk discrimination across random seeds. The mean gated ROC-AUC is $0.9063 \pm 0.0019$, while UID smoothing increases the mean ROC-AUC to $0.9071 \pm 0.0017$. This improvement is small but consistent across all three seeds, suggesting that causal UID-level risk smoothing improves ranking stability without changing the underlying MVS-XAI architecture. The smoothed F1-score is $0.5244 \pm 0.0029$, which is meaningful under the 3.5\% fraud prevalence of IEEE-CIS, but it also shows that threshold-sensitive minority detection remains harder than ranking performance.
+
+The confidence-gated and ungated AUC values are identical in this run, and McNemar's test gives $p=1.0$ across the seeds. This does not invalidate the gating design, but it shows that the current IEEE-CIS fold reliabilities did not generate a decision-level separation between gated and ungated stacking. Accordingly, the present evidence supports the Triple-View stacking and UID smoothing components more strongly than the confidence-gating component. For H1, the full multi-view system demonstrates strong discrimination, but a cleaner structural ablation table is still required to isolate the exact gain of the sequential and behavioral views over a tabular-only baseline. For H4, the observed IEEE-CIS result should be interpreted as neutral evidence: gating preserves performance, but does not yet improve it.
+
+Operationally, the run generated three holdout prediction files, one for each seed. In the seed-44 artifact, 85{,}403 transactions were automatically allowed, 1{,}452 were routed to \texttt{AUTO\_BLOCK}, and 726 were routed to \texttt{HITL\_REVIEW}. The highest-risk transactions all corresponded to true fraud labels with fraud scores above 0.998, which supports the practical usefulness of the risk ranking and HITL triage layer. However, the latency benchmark averaged $85.8 \pm 6.2$ ms, so the present implementation should be treated as research-grade and audit-ready rather than fully optimized for sub-50 ms production deployment.
+
+Additional governance diagnostics were also informative. The IEEE-CIS run showed stable score-level PSI, while feature-level Wasserstein analysis identified several drifted feature distributions, particularly among PCA-derived V-feature groups and transaction-count features. Proxy fairness auditing showed acceptable demographic parity difference but a warning-level equalized-odds TPR gap. These findings are important for the report because they show that high ROC-AUC alone is not sufficient for deployment readiness: calibration, drift, fairness, HITL routing, and latency must be reported together with predictive performance.
+
+% ============================================================
 \section{Research Timeline}
 
 \begin{figure}[H]
