@@ -135,6 +135,15 @@ class UltimateXAIAuditor:
 
         if shap is not None:
             try:
+                if hasattr(self.model, "coef_"):
+                    explainer = shap.LinearExplainer(self.model, self.X_background)
+                    shap_values = explainer.shap_values(X_explain)
+                    print(
+                        f"  [SHAP] Computed with LinearExplainer for {X_explain.shape[0]} samples "
+                        f"and {min(max_display, X_explain.shape[1])} displayed features"
+                    )
+                    return shap_values
+
                 explainer = shap.TreeExplainer(self.model)
                 shap_values = explainer.shap_values(X_explain)
                 print(

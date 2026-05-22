@@ -560,7 +560,9 @@ def artifact_review_code(dataset: str) -> str:
 
 def academic_evaluation_code(dataset: str) -> str:
     return f"""
+    import json
     import math
+    from pathlib import Path
 
     import matplotlib.pyplot as plt
     import numpy as np
@@ -587,6 +589,15 @@ def academic_evaluation_code(dataset: str) -> str:
                 return int(parent.replace("seed_", ""))
             except ValueError:
                 pass
+        return -1
+
+    def parse_seed_from_parts(path: Path) -> int:
+        for part in path.parts:
+            if part.startswith("seed_"):
+                try:
+                    return int(part.replace("seed_", ""))
+                except ValueError:
+                    return -1
         return -1
 
     def optimal_f1_threshold(y_true, scores):
@@ -784,6 +795,76 @@ def academic_evaluation_code(dataset: str) -> str:
     academic_calibration = pd.DataFrame(calibration_rows).sort_values(["seed", "bin"])
     academic_score_bins = pd.concat(score_bin_frames, ignore_index=True)
 
+    xai_global_frames = []
+    xai_local_frames = []
+    xai_harness_rows = []
+    xai_summary_files = sorted(ARTIFACTS_DIR.rglob("xai/xai_summary.json"))
+    for summary_path in xai_summary_files:
+        seed = parse_seed_from_parts(summary_path)
+        global_path = summary_path.parent / "meta_shap_global.csv"
+        local_path = summary_path.parent / "meta_shap_top_risk_local.csv"
+        if global_path.exists():
+            global_df = pd.read_csv(global_path)
+            global_df["seed"] = seed
+            xai_global_frames.append(global_df)
+        if local_path.exists():
+            local_df = pd.read_csv(local_path)
+            local_df["seed"] = seed
+            xai_local_frames.append(local_df)
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            summary = {{}}
+        harness = summary.get("single_instance_audit", {{}}).get("harness", {{}})
+        for metric_name, metric_value in harness.items():
+            xai_harness_rows.append({{
+                "seed": seed,
+                "metric": metric_name,
+                "value": metric_value,
+            }})
+
+    if xai_global_frames:
+        academic_meta_shap_global_by_seed = pd.concat(xai_global_frames, ignore_index=True)
+        academic_meta_shap_global_summary = (
+            academic_meta_shap_global_by_seed
+            .groupby("meta_feature", as_index=False)
+            .agg(
+                mean_abs_contribution=("mean_abs_contribution", "mean"),
+                std_abs_contribution=("mean_abs_contribution", "std"),
+                mean_signed_contribution=("mean_signed_contribution", "mean"),
+                mean_coefficient=("coefficient", "mean"),
+                mean_holdout_score=("holdout_mean_score", "mean"),
+                mean_background_score=("background_mean_score", "mean"),
+            )
+            .sort_values("mean_abs_contribution", ascending=False)
+        )
+        academic_meta_shap_global_by_seed.to_csv(
+            ACADEMIC_EVAL_DIR / "academic_meta_shap_global_by_seed.csv",
+            index=False,
+        )
+        academic_meta_shap_global_summary.to_csv(
+            ACADEMIC_EVAL_DIR / "academic_meta_shap_global_summary.csv",
+            index=False,
+        )
+    else:
+        academic_meta_shap_global_by_seed = pd.DataFrame()
+        academic_meta_shap_global_summary = pd.DataFrame()
+
+    if xai_local_frames:
+        academic_meta_shap_local = pd.concat(xai_local_frames, ignore_index=True)
+        academic_meta_shap_local.to_csv(
+            ACADEMIC_EVAL_DIR / "academic_meta_shap_top_risk_local.csv",
+            index=False,
+        )
+    else:
+        academic_meta_shap_local = pd.DataFrame()
+
+    if xai_harness_rows:
+        academic_xai_harness = pd.DataFrame(xai_harness_rows)
+        academic_xai_harness.to_csv(ACADEMIC_EVAL_DIR / "academic_xai_harness.csv", index=False)
+    else:
+        academic_xai_harness = pd.DataFrame()
+
     metric_cols = [
         "roc_auc",
         "pr_auc",
@@ -831,6 +912,9 @@ def academic_evaluation_code(dataset: str) -> str:
             "decision_distribution": "academic_decision_distribution.csv",
             "calibration_bins": "academic_calibration_bins.csv",
             "score_deciles": "academic_score_deciles.csv",
+            "meta_shap_global_summary": "academic_meta_shap_global_summary.csv",
+            "meta_shap_top_risk_local": "academic_meta_shap_top_risk_local.csv",
+            "xai_harness": "academic_xai_harness.csv",
         }},
         "note": "Holdout descriptive threshold metrics are for reporting analysis. The pipeline's operational threshold is selected from training/OOF predictions.",
     }}
@@ -878,6 +962,17 @@ def academic_evaluation_code(dataset: str) -> str:
     plt.savefig(ACADEMIC_EVAL_DIR / f"calibration_seed_{{latest_seed}}.png", dpi=160)
     plt.show()
 
+    if not academic_meta_shap_global_summary.empty:
+        plot_df = academic_meta_shap_global_summary.sort_values("mean_abs_contribution", ascending=True)
+        plt.figure(figsize=(7, 4))
+        plt.barh(plot_df["meta_feature"], plot_df["mean_abs_contribution"])
+        plt.xlabel("Mean absolute meta-SHAP contribution")
+        plt.ylabel("MVS-XAI branch")
+        plt.title(f"{{DATASET.upper()}} global meta-SHAP branch contribution")
+        plt.tight_layout()
+        plt.savefig(ACADEMIC_EVAL_DIR / "meta_shap_global_summary.png", dpi=160)
+        plt.show()
+
     print("Academic evaluation artifacts written to:", ACADEMIC_EVAL_DIR)
     print("Seed-level metrics:")
     display(academic_seed_metrics)
@@ -889,6 +984,17 @@ def academic_evaluation_code(dataset: str) -> str:
     display(academic_policy)
     print("Decision distribution:")
     display(academic_decisions)
+    if not academic_meta_shap_global_summary.empty:
+        print("Global meta-SHAP branch contribution:")
+        display(academic_meta_shap_global_summary)
+    else:
+        print("No persisted XAI/SHAP artifacts found. Rerun the training cell with the latest pipeline to generate seed_*/xai artifacts.")
+    if not academic_meta_shap_local.empty:
+        print("Local meta-SHAP contribution for top-risk audited transactions:")
+        display(academic_meta_shap_local)
+    if not academic_xai_harness.empty:
+        print("XAI harness metrics:")
+        display(academic_xai_harness)
     """
 
 
@@ -907,12 +1013,16 @@ def report_code(dataset_label: str, dataset: str) -> str:
     academic_topk_path = academic_eval_dir / "academic_topk_capture.csv"
     academic_policy_path = academic_eval_dir / "academic_policy_metrics.csv"
     academic_decisions_path = academic_eval_dir / "academic_decision_distribution.csv"
+    academic_meta_shap_path = academic_eval_dir / "academic_meta_shap_global_summary.csv"
+    academic_xai_harness_path = academic_eval_dir / "academic_xai_harness.csv"
 
     if academic_metric_summary_path.exists():
         academic_metric_summary = pd.read_csv(academic_metric_summary_path)
         topk_table = pd.read_csv(academic_topk_path) if academic_topk_path.exists() else pd.DataFrame()
         policy_table = pd.read_csv(academic_policy_path) if academic_policy_path.exists() else pd.DataFrame()
         decision_table = pd.read_csv(academic_decisions_path) if academic_decisions_path.exists() else pd.DataFrame()
+        meta_shap_table = pd.read_csv(academic_meta_shap_path) if academic_meta_shap_path.exists() else pd.DataFrame()
+        xai_harness_table = pd.read_csv(academic_xai_harness_path) if academic_xai_harness_path.exists() else pd.DataFrame()
         roc_row = academic_metric_summary[academic_metric_summary["metric"] == "roc_auc"].iloc[0]
         pr_row = academic_metric_summary[academic_metric_summary["metric"] == "pr_auc"].iloc[0]
         ece_row = academic_metric_summary[academic_metric_summary["metric"] == "ece_10bin"].iloc[0]
@@ -921,6 +1031,8 @@ def report_code(dataset_label: str, dataset: str) -> str:
         topk_excerpt = topk_table.to_markdown(index=False) if not topk_table.empty else "Not generated."
         policy_excerpt = policy_table.to_markdown(index=False) if not policy_table.empty else "Not generated."
         decision_excerpt = decision_table.to_markdown(index=False) if not decision_table.empty else "Not generated."
+        meta_shap_excerpt = meta_shap_table.to_markdown(index=False) if not meta_shap_table.empty else "Not generated. Rerun the training cell with the latest pipeline to persist XAI artifacts."
+        xai_harness_excerpt = xai_harness_table.to_markdown(index=False) if not xai_harness_table.empty else "Not generated. Rerun the training cell with the latest pipeline to persist XAI artifacts."
         advanced_results_md = f'''
     ## Extended Academic Evaluation
 
@@ -941,6 +1053,16 @@ def report_code(dataset_label: str, dataset: str) -> str:
     ### Decision Distribution
 
     {{decision_excerpt}}
+
+    ### Meta-SHAP Branch Contribution
+
+    The SHAP layer is interpreted at the stacking level: RF, XGB, LGB, CAT, MLP, and LSTM are the explainable meta-features. This directly explains how the MVS-XAI meta-learner combines the three-view base-model outputs.
+
+    {{meta_shap_excerpt}}
+
+    ### XAI Harness Metrics
+
+    {{xai_harness_excerpt}}
 
     Generated academic evaluation tables and figures are stored under `academic_evaluation/`.
     '''

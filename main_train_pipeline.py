@@ -310,25 +310,160 @@ def run_meta_xai_audit(background_matrix, explain_matrix, fraud_scores, model_na
     results = auditor.full_audit(instance, fraud_score)
     harness = XAIEvaluationHarness(auditor)
     harness_metrics = harness.evaluate(instance, results)
+    shap_top = auditor._extract_shap_pairs(results["shap"], limit=len(model_names))
 
     print("\n  LIME-style top contributors:")
+    lime_top = []
     if results["lime"] is not None:
-        for feat, weight in results["lime"].as_list()[:5]:
+        lime_top = results["lime"].as_list()
+        for feat, weight in lime_top[:5]:
             print(f"    {feat:<8} {weight:+.4f}")
 
+    dice_counterfactuals = []
     if isinstance(results["dice"], dict):
+        dice_counterfactuals = results["dice"].get("counterfactuals", [])
         print("\n  Counterfactual suggestions:")
-        for cf in results["dice"].get("counterfactuals", []):
+        for cf in dice_counterfactuals:
             print(
                 f"    {cf['feature']}: {cf['original_value']:.4f} -> "
                 f"{cf['suggested_value']:.4f} (new_score={cf['new_score']:.4f})"
             )
 
+    anchor_rules = []
     if results["anchors"] is not None:
-        print(f"\n  Anchor-style rules: {results['anchors'].names()}")
+        anchor_rules = results["anchors"].names()
+        print(f"\n  Anchor-style rules: {anchor_rules}")
 
     print("\n" + results["llm_summary"])
-    return {"results": results, "harness": harness_metrics, "instance_index": top_idx}
+    return {
+        "results": results,
+        "harness": harness_metrics,
+        "instance_index": top_idx,
+        "fraud_score": fraud_score,
+        "shap_top": shap_top,
+        "lime_top": lime_top,
+        "dice_counterfactuals": dice_counterfactuals,
+        "anchor_rules": anchor_rules,
+        "llm_summary": results["llm_summary"],
+    }
+
+
+def _json_safe(value):
+    if isinstance(value, (np.integer, np.floating)):
+        value = value.item()
+        if isinstance(value, float) and not np.isfinite(value):
+            return None
+        return value
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return value
+
+
+def save_xai_artifacts(
+    dataset,
+    seed,
+    xai_result,
+    background_matrix,
+    explain_matrix,
+    fraud_scores,
+    model_names,
+    meta_model,
+    artifacts_dir="artifacts",
+):
+    """Persist reportable meta-SHAP artifacts for the stacking layer."""
+
+    artifacts_dir = Path(artifacts_dir)
+    xai_dir = artifacts_dir / "xai"
+    xai_dir.mkdir(parents=True, exist_ok=True)
+
+    background = np.asarray(background_matrix, dtype=float)
+    explain = np.asarray(explain_matrix, dtype=float)
+    names = list(model_names)
+    coefs = np.asarray(getattr(meta_model, "coef_", np.zeros((1, len(names)))), dtype=float)
+    if coefs.ndim == 2:
+        coefs = coefs[0]
+    if coefs.shape[0] != len(names):
+        coefs = np.ones(len(names), dtype=float)
+
+    background_mean = background.mean(axis=0)
+    contributions = (explain - background_mean) * coefs
+    global_rows = []
+    for idx, name in enumerate(names):
+        feature_contrib = contributions[:, idx]
+        global_rows.append(
+            {
+                "dataset": dataset,
+                "seed": seed,
+                "meta_feature": name,
+                "coefficient": float(coefs[idx]),
+                "background_mean_score": float(background_mean[idx]),
+                "holdout_mean_score": float(explain[:, idx].mean()),
+                "mean_signed_contribution": float(feature_contrib.mean()),
+                "mean_abs_contribution": float(np.abs(feature_contrib).mean()),
+                "std_contribution": float(feature_contrib.std(ddof=1)) if len(feature_contrib) > 1 else 0.0,
+                "positive_contribution_rate": float((feature_contrib > 0).mean()),
+            }
+        )
+
+    global_df = pd.DataFrame(global_rows).sort_values("mean_abs_contribution", ascending=False)
+    global_df.to_csv(xai_dir / "meta_shap_global.csv", index=False)
+
+    local_idx = int(xai_result["instance_index"]) if xai_result else int(np.argmax(fraud_scores))
+    local_contrib = contributions[local_idx]
+    local_rows = []
+    for idx, name in enumerate(names):
+        local_rows.append(
+            {
+                "dataset": dataset,
+                "seed": seed,
+                "instance_index": local_idx,
+                "meta_feature": name,
+                "base_model_score": float(explain[local_idx, idx]),
+                "background_mean_score": float(background_mean[idx]),
+                "coefficient": float(coefs[idx]),
+                "local_contribution": float(local_contrib[idx]),
+                "abs_local_contribution": float(abs(local_contrib[idx])),
+            }
+        )
+    local_df = pd.DataFrame(local_rows).sort_values("abs_local_contribution", ascending=False)
+    local_df.to_csv(xai_dir / "meta_shap_top_risk_local.csv", index=False)
+
+    summary = {
+        "dataset": dataset,
+        "seed": seed,
+        "method": "meta_shap_linear_logit_approximation",
+        "scope": "stacking_layer_base_model_outputs",
+        "explained_features": names,
+        "top_risk_instance_index": local_idx,
+        "top_risk_score": float(fraud_scores[local_idx]),
+        "global_top_features": global_df.head(len(names)).to_dict(orient="records"),
+        "local_top_features": local_df.head(len(names)).to_dict(orient="records"),
+        "single_instance_audit": {
+            "shap_top": xai_result.get("shap_top", []) if xai_result else [],
+            "lime_top": xai_result.get("lime_top", []) if xai_result else [],
+            "anchor_rules": xai_result.get("anchor_rules", []) if xai_result else [],
+            "dice_counterfactuals": xai_result.get("dice_counterfactuals", []) if xai_result else [],
+            "harness": xai_result.get("harness", {}) if xai_result else {},
+            "llm_summary": xai_result.get("llm_summary", "") if xai_result else "",
+        },
+    }
+    (xai_dir / "xai_summary.json").write_text(
+        json.dumps(_json_safe(summary), indent=2),
+        encoding="utf-8",
+    )
+    print(f"\n  Saved XAI artifacts to: {xai_dir.resolve()}")
+    return {
+        "xai_dir": str(xai_dir.resolve()),
+        "meta_shap_global": str((xai_dir / "meta_shap_global.csv").resolve()),
+        "meta_shap_local": str((xai_dir / "meta_shap_top_risk_local.csv").resolve()),
+        "summary": str((xai_dir / "xai_summary.json").resolve()),
+    }
 
 
 def save_holdout_artifacts(dataset, holdout_frame, fraud_scores, decisions, artifacts_dir="artifacts"):
@@ -776,6 +911,17 @@ def run_single_seed(
         model_names=active_models,
         meta_model=meta.base_lr,
     )
+    xai_artifacts = save_xai_artifacts(
+        dataset=dataset,
+        seed=seed,
+        xai_result=xai_result,
+        background_matrix=train_oof_matrix,
+        explain_matrix=holdout_matrix,
+        fraud_scores=smoothed_holdout_probas,
+        model_names=active_models,
+        meta_model=meta.base_lr,
+        artifacts_dir=artifacts_dir,
+    )
 
     mcnemar = mcnemar_test(
         y_holdout,
@@ -821,6 +967,7 @@ def run_single_seed(
         "fairness": fairness_result,
         "adwin": adwin_result,
         "xai": xai_result,
+        "xai_artifacts": xai_artifacts,
         "meta_train_auc": meta_train_result["auc"],
         "meta_raw_train_auc": meta_raw_train_result["auc"],
     }
