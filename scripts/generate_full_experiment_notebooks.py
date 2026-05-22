@@ -47,6 +47,18 @@ def notebook_metadata() -> dict:
     }
 
 
+def markdown_cell(cell_id: str, source: str):
+    cell = new_markdown_cell(textwrap.dedent(source).strip())
+    cell["id"] = cell_id
+    return cell
+
+
+def code_cell(cell_id: str, source: str):
+    cell = new_code_cell(textwrap.dedent(source).strip())
+    cell["id"] = cell_id
+    return cell
+
+
 def repo_config_code() -> str:
     return f"""
     from pathlib import Path
@@ -565,16 +577,16 @@ def build_notebook(dataset: str) -> nbformat.NotebookNode:
     """
 
     cells = [
-        new_markdown_cell(textwrap.dedent(intro_md).strip()),
-        new_markdown_cell(textwrap.dedent(protocol_md).strip()),
-        new_code_cell(textwrap.dedent(repo_config_code()).strip()),
-        new_code_cell(textwrap.dedent(environment_code()).strip()),
-        new_code_cell(textwrap.dedent(download_helpers_code()).strip()),
-        new_code_cell(textwrap.dedent(download_code).strip()),
-        new_code_cell(textwrap.dedent(run_pipeline_code(dataset)).strip()),
-        new_code_cell(textwrap.dedent(artifact_review_code(dataset)).strip()),
-        new_code_cell(textwrap.dedent(report_code(dataset_label, dataset)).strip()),
-        new_code_cell(textwrap.dedent(package_artifacts_code(dataset)).strip()),
+        markdown_cell(f"{dataset}-intro", intro_md),
+        markdown_cell(f"{dataset}-research-protocol", protocol_md),
+        code_cell(f"{dataset}-repo-config", repo_config_code()),
+        code_cell(f"{dataset}-environment", environment_code()),
+        code_cell(f"{dataset}-download-helpers", download_helpers_code()),
+        code_cell(f"{dataset}-dataset-download", download_code),
+        code_cell(f"{dataset}-run-pipeline", run_pipeline_code(dataset)),
+        code_cell(f"{dataset}-artifact-review", artifact_review_code(dataset)),
+        code_cell(f"{dataset}-academic-report", report_code(dataset_label, dataset)),
+        code_cell(f"{dataset}-package-artifacts", package_artifacts_code(dataset)),
     ]
     return new_notebook(cells=cells, metadata=notebook_metadata())
 
