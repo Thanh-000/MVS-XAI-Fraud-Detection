@@ -133,6 +133,22 @@ venv\Scripts\activate     # Windows
 pip install -r requirements.txt
 ```
 
+For a local full-research setup, see [docs/local_full_experiment.md](docs/local_full_experiment.md).
+
+Windows:
+
+```powershell
+.\scripts\setup_local_env.ps1
+.\scripts\run_full_experiment.ps1 -Dataset both -Device cuda
+```
+
+Linux/macOS:
+
+```bash
+bash scripts/setup_local_env.sh
+bash scripts/run_full_experiment.sh --dataset both --device cuda
+```
+
 ## Dataset Setup
 
 Download the supported datasets into `data/`.
