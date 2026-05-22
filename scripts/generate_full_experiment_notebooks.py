@@ -393,27 +393,11 @@ def run_pipeline_code(dataset: str) -> str:
     return f"""
     import contextlib
     import inspect
-    import io
-    import math
     from datetime import datetime, timezone
 
     from IPython.display import display
 
     from main_train_pipeline import main as run_mvs_xai_pipeline
-
-    class Tee(io.TextIOBase):
-        def __init__(self, *streams):
-            self.streams = streams
-
-        def write(self, text):
-            for stream in self.streams:
-                stream.write(text)
-                stream.flush()
-            return len(text)
-
-        def flush(self):
-            for stream in self.streams:
-                stream.flush()
 
     DATASET = "{dataset}"
     METHOD_NAME = "MVS-XAI Triple-View Stacking with Confidence Gating, UID smoothing, XAI, HITL"
@@ -428,6 +412,7 @@ def run_pipeline_code(dataset: str) -> str:
     PIPELINE_SMOTE_STRATEGY = 0.30
     PIPELINE_CTGAN_SAMPLES = 0
     PIPELINE_CTGAN_EPOCHS = 30
+    LOG_TAIL_LINES = 120
 {paysim_constants}
 
     ARTIFACTS_DIR = REPO_ROOT / "artifacts" / f"{{DATASET}}_academic_full"
@@ -460,8 +445,7 @@ def run_pipeline_code(dataset: str) -> str:
     display(pd.DataFrame([run_config]).T.rename(columns={{0: "value"}}))
 
     with LOG_PATH.open("w", encoding="utf-8") as log_file:
-        tee = Tee(sys.stdout, log_file)
-        with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
+        with contextlib.redirect_stdout(log_file), contextlib.redirect_stderr(log_file):
             pipeline_kwargs = {{
                 "data_dir": str(DATA_DIR),
                 "device": PIPELINE_DEVICE,
@@ -498,6 +482,29 @@ def run_pipeline_code(dataset: str) -> str:
 
     print(f"Training log saved to: {{LOG_PATH}}")
     print(f"Artifacts directory: {{ARTIFACTS_DIR}}")
+    print("Full training stdout/stderr was captured in the log artifact to avoid Colab output truncation.")
+
+    compact_keys = [
+        "seed",
+        "gated_auc",
+        "ungated_auc",
+        "smoothed_auc",
+        "smoothed_f1",
+        "mcnemar_p",
+        "latency_ms",
+        "meta_train_auc",
+        "meta_raw_train_auc",
+    ]
+    compact_rows = []
+    for result in seed_results:
+        compact_rows.append({{key: result.get(key) for key in compact_keys if key in result}})
+    if compact_rows:
+        print("Seed-level result summary:")
+        display(pd.DataFrame(compact_rows))
+
+    print(f"Last {{LOG_TAIL_LINES}} lines of the training log:")
+    log_lines = LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+    print("\\n".join(log_lines[-LOG_TAIL_LINES:]))
     """
 
 

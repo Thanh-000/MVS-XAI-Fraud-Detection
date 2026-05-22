@@ -171,6 +171,8 @@ def fit_tree_model(model_name, X_train, y_train, X_val, y_val, device_type, seed
         X_val_fit = X_val_frame
     if model_name == "RF" or X_val is None or y_val is None:
         model.fit(X_train_fit, y_train)
+    elif model_name == "XGB":
+        model.fit(X_train_fit, y_train, eval_set=[(X_val_fit, y_val)], verbose=False)
     else:
         model.fit(X_train_fit, y_train, eval_set=[(X_val_fit, y_val)])
     if X_val is None:

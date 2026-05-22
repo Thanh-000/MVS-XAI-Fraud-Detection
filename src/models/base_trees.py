@@ -62,7 +62,8 @@ class TreeEnsembleFactory:
             early_stopping_rounds=50,
             subsample=0.8,
             colsample_bytree=0.7,
-            random_state=seed
+            random_state=seed,
+            verbosity=0,
         )
         if use_gpu:
             params['device'] = 'cuda'
