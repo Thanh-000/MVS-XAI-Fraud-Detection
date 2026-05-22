@@ -402,7 +402,11 @@ def run_pipeline_code(dataset: str) -> str:
     DATASET = "{dataset}"
     METHOD_NAME = "MVS-XAI Triple-View Stacking with Confidence Gating, UID smoothing, XAI, HITL"
 
+    # Full research is the default. Set RUN_FULL_RESEARCH=False only for a
+    # quick smoke/debug run before the final academic sweep.
+    RUN_FULL_RESEARCH = True
     PIPELINE_PRESET = "full_mvs"
+    PIPELINE_MODEL_PROFILE = "research"
     PIPELINE_DEVICE = "cuda"
     PIPELINE_TEST_RATIO = 0.15
     PIPELINE_N_SPLITS = 5
@@ -412,12 +416,27 @@ def run_pipeline_code(dataset: str) -> str:
     PIPELINE_SMOTE_STRATEGY = 0.30
     PIPELINE_CTGAN_SAMPLES = 0
     PIPELINE_CTGAN_EPOCHS = 30
+    PIPELINE_MLP_EPOCHS = 15
+    PIPELINE_LSTM_EPOCHS = 12
     LOG_TAIL_LINES = 120
 {paysim_constants}
 
-    ARTIFACTS_DIR = REPO_ROOT / "artifacts" / f"{{DATASET}}_academic_full"
+    if not RUN_FULL_RESEARCH:
+        PIPELINE_PRESET = "fast_mvs"
+        PIPELINE_MODEL_PROFILE = "fast"
+        PIPELINE_N_SPLITS = 3
+        PIPELINE_N_SEEDS = 1
+        PIPELINE_SMOTE_STRATEGY = 0.10
+        PIPELINE_MLP_EPOCHS = 6
+        PIPELINE_LSTM_EPOCHS = 4
+        if DATASET == "paysim":
+            PIPELINE_PAYSIM_MAX_ROWS = 1500000
+        METHOD_NAME = METHOD_NAME + " (Colab fast profile: LSTM branch disabled)"
+
+    RUN_LABEL = "academic_full" if RUN_FULL_RESEARCH else "academic_colab_fast"
+    ARTIFACTS_DIR = REPO_ROOT / "artifacts" / f"{{DATASET}}_{{RUN_LABEL}}"
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    LOG_PATH = ARTIFACTS_DIR / f"{{DATASET}}_academic_full_train.log"
+    LOG_PATH = ARTIFACTS_DIR / f"{{DATASET}}_{{RUN_LABEL}}_train.log"
 
     run_config = {{
         "run_utc": datetime.now(timezone.utc).isoformat(),
@@ -426,7 +445,10 @@ def run_pipeline_code(dataset: str) -> str:
         "repo_root": str(REPO_ROOT),
         "data_dir": str(DATA_DIR),
         "artifacts_dir": str(ARTIFACTS_DIR),
+        "run_full_research": RUN_FULL_RESEARCH,
+        "run_label": RUN_LABEL,
         "preset": PIPELINE_PRESET,
+        "model_profile": PIPELINE_MODEL_PROFILE,
         "device": PIPELINE_DEVICE,
         "test_ratio": PIPELINE_TEST_RATIO,
         "n_splits": PIPELINE_N_SPLITS,
@@ -436,6 +458,8 @@ def run_pipeline_code(dataset: str) -> str:
         "smote_strategy": PIPELINE_SMOTE_STRATEGY,
         "ctgan_samples": PIPELINE_CTGAN_SAMPLES,
         "ctgan_epochs": PIPELINE_CTGAN_EPOCHS,
+        "mlp_epochs": PIPELINE_MLP_EPOCHS,
+        "lstm_epochs": PIPELINE_LSTM_EPOCHS,
     }}
 {paysim_run_config_update}
     (ARTIFACTS_DIR / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
@@ -459,6 +483,9 @@ def run_pipeline_code(dataset: str) -> str:
                 "ctgan_samples": PIPELINE_CTGAN_SAMPLES,
                 "ctgan_epochs": PIPELINE_CTGAN_EPOCHS,
                 "preset": PIPELINE_PRESET,
+                "model_profile": PIPELINE_MODEL_PROFILE,
+                "mlp_epochs": PIPELINE_MLP_EPOCHS,
+                "lstm_epochs": PIPELINE_LSTM_EPOCHS,
                 "artifacts_dir": str(ARTIFACTS_DIR),
             }}
 {paysim_pipeline_kwargs_update}
@@ -1083,6 +1110,10 @@ def report_code(dataset_label: str, dataset: str) -> str:
     ## Experimental Design
 
     - Dataset: {dataset_label}
+    - Run label: {{RUN_LABEL}}
+    - Full research mode: {{RUN_FULL_RESEARCH}}
+    - Pipeline preset: {{PIPELINE_PRESET}}
+    - Model profile: {{PIPELINE_MODEL_PROFILE}}
     - Data source: direct signed Kaggle bundle downloaded with `aria2c`
     - Evaluation split: temporal holdout from the labeled training data
     - Validation protocol: time-aware OOF folds with an explicit gap

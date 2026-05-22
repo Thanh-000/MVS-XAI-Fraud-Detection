@@ -21,6 +21,14 @@ class RuntimeFallbackTests(unittest.TestCase):
             self.assertNotIn("MLP", active)
             self.assertNotIn("LSTM", active)
 
+    def test_fast_mvs_disables_lstm(self):
+        active = pipeline.get_active_model_names("cpu", seed=42, preset="fast_mvs")
+
+        self.assertNotIn("LSTM", active)
+        if pipeline.module_available("torch"):
+            self.assertIn("MLP", active)
+        self.assertEqual(pipeline.resolve_model_profile("fast_mvs"), "fast")
+
     def test_resampling_disabled_returns_original_data(self):
         X = np.array([[0.0], [1.0], [2.0], [3.0]])
         y = np.array([0, 0, 0, 1])

@@ -85,11 +85,58 @@ class UIDFeatureEngineer:
         df = df.sort_values('TransactionDT').reset_index(drop=True)
         print("  UID Aggregations (expanding, no future leakage):")
 
+        if df['UID'].nunique(dropna=False) == len(df):
+            df['UID_amt_mean'] = df['TransactionAmt'].astype(float)
+            df['UID_amt_std'] = 0.0
+            df['UID_txn_count'] = 1
+            df['UID_amt_zscore'] = 0.0
+
+            for c_col in ['C1', 'C13', 'C14']:
+                if c_col in df.columns:
+                    df[f'{c_col}_uid_mean'] = df[c_col].astype(float).fillna(0.0)
+                    df[f'{c_col}_uid_std'] = 0.0
+
+            for m_col in ['M4', 'M5', 'M6', 'M9']:
+                if m_col not in df.columns:
+                    continue
+                if df[m_col].dtype == object:
+                    df[m_col] = df[m_col].map({'T': 1, 'F': 0}).fillna(-1)
+                df[f'{m_col}_uid_mean'] = df[m_col].astype(float).fillna(0.0)
+
+            for d_col in ['D1', 'D15']:
+                if d_col in df.columns:
+                    df[f'{d_col}_uid_mean'] = df[d_col].astype(float).fillna(0.0)
+                    df[f'{d_col}_uid_std'] = 0.0
+                    df[f'{d_col}_uid_diff'] = 0.0
+                    df[f'{d_col}_uid_pct'] = 0.0
+
+            print("    UID is unique per row; used exact O(N) cold-start aggregation path")
+            print(f"    TransactionAmt: mean, std, count, z-score")
+            print(f"    C-columns: C1, C13, C14 per-UID mean/std")
+            print(f"    M-columns: M4, M5, M6, M9 per-UID mean "
+                  f"(M9_uid_mean is top Kaggle feature)")
+            print(f"    D-columns: D1, D15 per-UID mean/std/diff/pct_change")
+            return df
+
+        def expanding_mean_std(col):
+            values = df[col].astype(float)
+            valid = values.notna().astype(np.int32)
+            filled = values.fillna(0.0)
+            group_key = df['UID']
+            count = valid.groupby(group_key, sort=False).cumsum().astype(float)
+            safe_count = count.replace(0, np.nan)
+            cum_sum = filled.groupby(group_key, sort=False).cumsum()
+            cum_sq = (filled * filled).groupby(group_key, sort=False).cumsum()
+            mean = cum_sum / safe_count
+            variance = (cum_sq - (cum_sum * cum_sum / safe_count)) / (safe_count - 1)
+            std = np.sqrt(np.maximum(variance, 0)).fillna(0.0)
+            return mean.fillna(0.0), std
+
+        uid_counts = df.groupby('UID', sort=False).cumcount() + 1
+
         # --- TransactionAmt aggregations (most important) ---
-        grp_amt = df.groupby('UID')['TransactionAmt']
-        df['UID_amt_mean'] = grp_amt.transform(lambda x: x.expanding().mean())
-        df['UID_amt_std'] = grp_amt.transform(lambda x: x.expanding().std()).fillna(0)
-        df['UID_txn_count'] = grp_amt.transform(lambda x: x.expanding().count())
+        df['UID_amt_mean'], df['UID_amt_std'] = expanding_mean_std('TransactionAmt')
+        df['UID_txn_count'] = uid_counts.astype(np.int32)
         df['UID_amt_zscore'] = (
             (df['TransactionAmt'] - df['UID_amt_mean']) / (df['UID_amt_std'] + 1e-6)
         )
@@ -99,9 +146,7 @@ class UIDFeatureEngineer:
         for c_col in ['C1', 'C13', 'C14']:
             if c_col not in df.columns:
                 continue
-            g = df.groupby('UID')[c_col]
-            df[f'{c_col}_uid_mean'] = g.transform(lambda x: x.expanding().mean())
-            df[f'{c_col}_uid_std'] = g.transform(lambda x: x.expanding().std()).fillna(0)
+            df[f'{c_col}_uid_mean'], df[f'{c_col}_uid_std'] = expanding_mean_std(c_col)
         print(f"    C-columns: C1, C13, C14 per-UID mean/std")
 
         # --- M-column aggregations (match/mismatch features) ---
@@ -111,8 +156,7 @@ class UIDFeatureEngineer:
             # M-columns may be categorical (T/F) → encode first
             if df[m_col].dtype == object:
                 df[m_col] = df[m_col].map({'T': 1, 'F': 0}).fillna(-1)
-            g = df.groupby('UID')[m_col]
-            df[f'{m_col}_uid_mean'] = g.transform(lambda x: x.expanding().mean())
+            df[f'{m_col}_uid_mean'], _ = expanding_mean_std(m_col)
         print(f"    M-columns: M4, M5, M6, M9 per-UID mean "
               f"(M9_uid_mean is top Kaggle feature)")
 
@@ -120,9 +164,8 @@ class UIDFeatureEngineer:
         for d_col in ['D1', 'D15']:
             if d_col not in df.columns:
                 continue
-            g = df.groupby('UID')[d_col]
-            df[f'{d_col}_uid_mean'] = g.transform(lambda x: x.expanding().mean())
-            df[f'{d_col}_uid_std'] = g.transform(lambda x: x.expanding().std()).fillna(0)
+            g = df.groupby('UID', sort=False)[d_col]
+            df[f'{d_col}_uid_mean'], df[f'{d_col}_uid_std'] = expanding_mean_std(d_col)
             df[f'{d_col}_uid_diff'] = g.diff().fillna(0)
             df[f'{d_col}_uid_pct'] = g.pct_change(fill_method=None).replace(
                 [np.inf, -np.inf], 0

@@ -23,18 +23,42 @@ class BehavioralExtractor:
         """
         print("  View 3 (Behavioral): 7/14/30-day rolling velocity features...")
 
+        if df['card1'].nunique(dropna=False) == len(df):
+            for label in ['7d', '14d', '30d']:
+                df[f'Card_Velocity_{label}'] = df['TransactionAmt']
+                df[f'Card_Amt_Std_{label}'] = 0.0
+            df['Card_Tx_Count'] = 1
+            df['Card_Spending_Velocity'] = 1.0
+            df['Amt_Deviation'] = 0.0
+            df['Amt_to_Mean_Ratio'] = df['TransactionAmt'] / (df['TransactionAmt'] + 1)
+            df['Card_Prior_Txn_Count'] = 0
+            print(f"    Unique card1 per row; used exact O(N) cold-start velocity path")
+            print(f"    Cold-start accounts (<3 txns): {len(df):,} transactions")
+            return df
+
+        grouped_amount = df.groupby('card1', sort=False)['TransactionAmt']
         for window, label in [(7, '7d'), (14, '14d'), (30, '30d')]:
-            df[f'Card_Velocity_{label}'] = df.groupby('card1')['TransactionAmt'].transform(
-                lambda x: x.rolling(window, min_periods=1).mean())
-            df[f'Card_Amt_Std_{label}'] = df.groupby('card1')['TransactionAmt'].transform(
-                lambda x: x.rolling(window, min_periods=2).std())
+            df[f'Card_Velocity_{label}'] = (
+                grouped_amount.rolling(window, min_periods=1)
+                .mean()
+                .reset_index(level=0, drop=True)
+            )
+            df[f'Card_Amt_Std_{label}'] = (
+                grouped_amount.rolling(window, min_periods=2)
+                .std()
+                .reset_index(level=0, drop=True)
+                .fillna(0.0)
+            )
 
         # Spending velocity (count of txns observed so far). Do not use
         # transform('count'), which would reveal future transactions per card.
         prior_count = df.groupby('card1').cumcount()
         df['Card_Tx_Count'] = prior_count + 1
-        df['Card_Spending_Velocity'] = df.groupby('card1')['TransactionAmt'].transform(
-            lambda x: x.rolling(10, min_periods=1).count())
+        df['Card_Spending_Velocity'] = (
+            grouped_amount.rolling(10, min_periods=1)
+            .count()
+            .reset_index(level=0, drop=True)
+        )
 
         # Deviation from personal baseline
         df['Amt_Deviation'] = (

@@ -99,15 +99,29 @@ def build_feature_frame(df, dataset, fit_idx=None):
     return df
 
 
-def get_active_model_names(device_type, seed, preset="auto"):
-    if preset not in {"auto", "tree", "full_mvs"}:
-        raise ValueError("preset must be one of: auto, tree, full_mvs")
+def resolve_model_profile(preset="auto", model_profile=None):
+    if model_profile:
+        if model_profile not in {"research", "fast"}:
+            raise ValueError("model_profile must be one of: research, fast")
+        return model_profile
+    return "fast" if preset == "fast_mvs" else "research"
+
+
+def get_active_model_names(device_type, seed, preset="auto", model_profile=None):
+    if preset not in {"auto", "tree", "full_mvs", "fast_mvs"}:
+        raise ValueError("preset must be one of: auto, tree, full_mvs, fast_mvs")
+
+    profile = resolve_model_profile(preset, model_profile)
 
     model_builders = {
-        "RF": lambda: TreeEnsembleFactory.get_random_forest(seed=seed),
-        "XGB": lambda: TreeEnsembleFactory.get_xgboost(use_gpu=(device_type == "cuda"), seed=seed),
-        "LGB": lambda: TreeEnsembleFactory.get_lightgbm(seed=seed),
-        "CAT": lambda: TreeEnsembleFactory.get_catboost(use_gpu=(device_type == "cuda"), seed=seed),
+        "RF": lambda: TreeEnsembleFactory.get_random_forest(seed=seed, profile=profile),
+        "XGB": lambda: TreeEnsembleFactory.get_xgboost(
+            use_gpu=(device_type == "cuda"), seed=seed, profile=profile
+        ),
+        "LGB": lambda: TreeEnsembleFactory.get_lightgbm(seed=seed, profile=profile),
+        "CAT": lambda: TreeEnsembleFactory.get_catboost(
+            use_gpu=(device_type == "cuda"), seed=seed, profile=profile
+        ),
     }
 
     active = []
@@ -120,6 +134,14 @@ def get_active_model_names(device_type, seed, preset="auto"):
 
     if preset == "tree":
         print("  Preset 'tree': neural branches disabled for stable production-style training.")
+        return active
+
+    if preset == "fast_mvs":
+        if module_available("torch"):
+            active.append("MLP")
+            print("  Preset 'fast_mvs': fast tree profile + MLP; LSTM disabled for Colab runtime.")
+        else:
+            print("  Preset 'fast_mvs': PyTorch not installed, using tree branches only.")
         return active
 
     if module_available("torch"):
@@ -153,12 +175,26 @@ def prepare_xgb_device_input(X, device_type):
     return cp.asarray(np.asarray(X, dtype=np.float32))
 
 
-def fit_tree_model(model_name, X_train, y_train, X_val, y_val, device_type, seed, feature_names):
+def fit_tree_model(
+    model_name,
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    device_type,
+    seed,
+    feature_names,
+    model_profile="research",
+):
     builders = {
-        "RF": lambda: TreeEnsembleFactory.get_random_forest(seed=seed),
-        "XGB": lambda: TreeEnsembleFactory.get_xgboost(use_gpu=(device_type == "cuda"), seed=seed),
-        "LGB": lambda: TreeEnsembleFactory.get_lightgbm(seed=seed),
-        "CAT": lambda: TreeEnsembleFactory.get_catboost(use_gpu=(device_type == "cuda"), seed=seed),
+        "RF": lambda: TreeEnsembleFactory.get_random_forest(seed=seed, profile=model_profile),
+        "XGB": lambda: TreeEnsembleFactory.get_xgboost(
+            use_gpu=(device_type == "cuda"), seed=seed, profile=model_profile
+        ),
+        "LGB": lambda: TreeEnsembleFactory.get_lightgbm(seed=seed, profile=model_profile),
+        "CAT": lambda: TreeEnsembleFactory.get_catboost(
+            use_gpu=(device_type == "cuda"), seed=seed, profile=model_profile
+        ),
     }
     model = builders[model_name]()
     X_train_frame = ensure_feature_frame(X_train, feature_names)
@@ -579,31 +615,16 @@ def benchmark_decision_latency(
     return {"median_ms": median_ms, "target_met": bool(median_ms < 50.0)}
 
 
-def run_single_seed(
+def prepare_pipeline_payload(
     data_dir="data/",
-    device="cuda",
     dataset="ieee",
     test_ratio=0.15,
     n_splits=5,
     gap_size=1000,
-    seed=42,
-    smote_strategy=0.30,
-    ctgan_samples=0,
-    ctgan_epochs=30,
     paysim_chunk_size=750000,
     paysim_max_rows=None,
     paysim_step_block_size=24,
-    preset="auto",
-    artifacts_dir="artifacts",
 ):
-    set_global_seed(seed)
-    device = resolve_device(device)
-    print("=== MVS-XAI Pipeline v4.4.0 ===")
-    print(f"Device: {device}")
-    print(f"Dataset: {dataset}")
-    print(f"Seed: {seed}")
-    print(f"Preset: {preset}")
-
     print_section("PHASE 1: Data Loading and Feature Engineering")
     loader_kwargs = {}
     if dataset == "paysim":
@@ -627,13 +648,85 @@ def run_single_seed(
     print(f"\n  Final dataset: {X.shape[0]:,} samples x {X.shape[1]} features")
     print(f"  Fraud rate: {y.mean() * 100:.2f}%")
 
+    return SimpleNamespace(
+        df=df,
+        X=X,
+        y=y,
+        entity_ids=entity_ids,
+        feature_cols=feature_cols,
+        train_idx=train_idx,
+        holdout_idx=holdout_idx,
+        splitter=splitter,
+    )
+
+
+def run_single_seed(
+    data_dir="data/",
+    device="cuda",
+    dataset="ieee",
+    test_ratio=0.15,
+    n_splits=5,
+    gap_size=1000,
+    seed=42,
+    smote_strategy=0.30,
+    ctgan_samples=0,
+    ctgan_epochs=30,
+    paysim_chunk_size=750000,
+    paysim_max_rows=None,
+    paysim_step_block_size=24,
+    preset="auto",
+    model_profile=None,
+    mlp_epochs=None,
+    lstm_epochs=None,
+    prepared_payload=None,
+    artifacts_dir="artifacts",
+):
+    set_global_seed(seed)
+    device = resolve_device(device)
+    model_profile = resolve_model_profile(preset, model_profile)
+    mlp_epochs = 6 if mlp_epochs is None and model_profile == "fast" else (15 if mlp_epochs is None else mlp_epochs)
+    lstm_epochs = 4 if lstm_epochs is None and model_profile == "fast" else (12 if lstm_epochs is None else lstm_epochs)
+    print("=== MVS-XAI Pipeline v4.4.0 ===")
+    print(f"Device: {device}")
+    print(f"Dataset: {dataset}")
+    print(f"Seed: {seed}")
+    print(f"Preset: {preset}")
+    print(f"Model profile: {model_profile}")
+
+    if prepared_payload is None:
+        payload = prepare_pipeline_payload(
+            data_dir=data_dir,
+            dataset=dataset,
+            test_ratio=test_ratio,
+            n_splits=n_splits,
+            gap_size=gap_size,
+            paysim_chunk_size=paysim_chunk_size,
+            paysim_max_rows=paysim_max_rows,
+            paysim_step_block_size=paysim_step_block_size,
+        )
+    else:
+        print_section("PHASE 1: Data Loading and Feature Engineering")
+        print("  Using precomputed dataset/features shared across seeds.")
+        payload = prepared_payload
+
+    df = payload.df
+    X = payload.X
+    y = payload.y
+    entity_ids = payload.entity_ids
+    feature_cols = payload.feature_cols
+    train_idx = payload.train_idx
+    holdout_idx = payload.holdout_idx
+    splitter = payload.splitter
+
     X_train_all, X_holdout = X[train_idx], X[holdout_idx]
     y_train_all, y_holdout = y[train_idx], y[holdout_idx]
     entity_train_all, entity_holdout = entity_ids[train_idx], entity_ids[holdout_idx]
     df_train_all = df.iloc[train_idx].reset_index(drop=True)
     df_holdout = df.iloc[holdout_idx].reset_index(drop=True)
 
-    active_models = get_active_model_names(device.type, seed, preset=preset)
+    active_models = get_active_model_names(
+        device.type, seed, preset=preset, model_profile=model_profile
+    )
     if len(active_models) < 2:
         raise RuntimeError("Need at least two active base models to run the stacker.")
 
@@ -677,6 +770,7 @@ def run_single_seed(
                 device.type,
                 seed=seed + fold_i,
                 feature_names=feature_cols,
+                model_profile=model_profile,
             )
             oof_train_predictions[model_name][fold_val_idx] = preds
 
@@ -689,6 +783,7 @@ def run_single_seed(
                 X_val_scaled,
                 y_val,
                 device,
+                epochs=mlp_epochs,
                 seed=seed + fold_i,
             )
             oof_train_predictions["MLP"][fold_val_idx] = mlp_preds
@@ -706,6 +801,7 @@ def run_single_seed(
                 y_val,
                 n_features=X_trn_scaled.shape[1],
                 device=device,
+                epochs=lstm_epochs,
                 seed=seed + fold_i,
             )
             oof_train_predictions["LSTM"][fold_val_idx] = lstm_preds
@@ -786,6 +882,7 @@ def run_single_seed(
             device.type,
             seed=seed,
             feature_names=feature_cols,
+            model_profile=model_profile,
         )
         final_models[model_name] = final_model
         holdout_tree_input = ensure_feature_frame(X_holdout, feature_cols)
@@ -802,6 +899,7 @@ def run_single_seed(
             X_val_scaled_full,
             y_final_val,
             device,
+            epochs=mlp_epochs,
             seed=seed,
         )
         final_models["MLP"] = mlp_model
@@ -821,6 +919,7 @@ def run_single_seed(
             y_final_val,
             n_features=X_train_scaled_full.shape[1],
             device=device,
+            epochs=lstm_epochs,
             seed=seed,
         )
         final_models["LSTM"] = lstm_model
@@ -989,8 +1088,26 @@ def main(
     paysim_max_rows=None,
     paysim_step_block_size=24,
     preset="auto",
+    model_profile=None,
+    mlp_epochs=None,
+    lstm_epochs=None,
     artifacts_dir="artifacts",
 ):
+    shared_payload = None
+    if n_seeds > 1:
+        print_section("SHARED DATA PREPARATION")
+        print("  Preparing dataset/features once for all seeds.")
+        shared_payload = prepare_pipeline_payload(
+            data_dir=data_dir,
+            dataset=dataset,
+            test_ratio=test_ratio,
+            n_splits=n_splits,
+            gap_size=gap_size,
+            paysim_chunk_size=paysim_chunk_size,
+            paysim_max_rows=paysim_max_rows,
+            paysim_step_block_size=paysim_step_block_size,
+        )
+
     seed_results = []
     for seed_offset in range(n_seeds):
         current_seed = seed + seed_offset
@@ -1015,6 +1132,10 @@ def main(
                 paysim_max_rows=paysim_max_rows,
                 paysim_step_block_size=paysim_step_block_size,
                 preset=preset,
+                model_profile=model_profile,
+                mlp_epochs=mlp_epochs,
+                lstm_epochs=lstm_epochs,
+                prepared_payload=shared_payload,
                 artifacts_dir=seed_artifacts_dir,
             )
         )
@@ -1064,7 +1185,10 @@ if __name__ == "__main__":
     parser.add_argument("--paysim_chunk_size", type=int, default=750000)
     parser.add_argument("--paysim_max_rows", type=int, default=None)
     parser.add_argument("--paysim_step_block_size", type=int, default=24)
-    parser.add_argument("--preset", type=str, default="auto", choices=["auto", "tree", "full_mvs"])
+    parser.add_argument("--preset", type=str, default="auto", choices=["auto", "tree", "full_mvs", "fast_mvs"])
+    parser.add_argument("--model_profile", type=str, default=None, choices=["research", "fast"])
+    parser.add_argument("--mlp_epochs", type=int, default=None)
+    parser.add_argument("--lstm_epochs", type=int, default=None)
     parser.add_argument("--artifacts_dir", type=str, default="artifacts")
     args = parser.parse_args()
 
@@ -1084,5 +1208,8 @@ if __name__ == "__main__":
         paysim_max_rows=args.paysim_max_rows,
         paysim_step_block_size=args.paysim_step_block_size,
         preset=args.preset,
+        model_profile=args.model_profile,
+        mlp_epochs=args.mlp_epochs,
+        lstm_epochs=args.lstm_epochs,
         artifacts_dir=args.artifacts_dir,
     )
