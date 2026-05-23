@@ -8,6 +8,7 @@ Loss: Focal Loss (γ=2.0, α=0.75)
 Training: Full epochs + best-state tracking (NO early stopping).
 """
 import numpy as np
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -77,6 +78,11 @@ def train_mlp_focal(X_trn, y_trn, X_val, y_val, device, epochs=15, lr=0.001, bat
     model = BehavioralMLP(n_features).to(device)
     criterion = FocalLoss(alpha=0.75, gamma=2.0)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    use_amp = (
+        os.getenv("MVS_XAI_TORCH_AMP", "1") == "1"
+        and getattr(device, "type", str(device)) == "cuda"
+    )
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     train_ds = TensorDataset(
         torch.as_tensor(X_trn, dtype=torch.float32),
@@ -99,9 +105,11 @@ def train_mlp_focal(X_trn, y_trn, X_val, y_val, device, epochs=15, lr=0.001, bat
         for X_b, y_b in loader:
             X_b, y_b = X_b.to(device), y_b.to(device)
             optimizer.zero_grad()
-            loss = criterion(model(X_b), y_b.unsqueeze(1))
-            loss.backward()
-            optimizer.step()
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                loss = criterion(model(X_b), y_b.unsqueeze(1))
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
         # --- Best-state tracking (NO early stopping) ---
         model.eval()
@@ -111,7 +119,8 @@ def train_mlp_focal(X_trn, y_trn, X_val, y_val, device, epochs=15, lr=0.001, bat
             val_loss = 0
             for X_b, y_b in val_loader_tmp:
                 X_b, y_b = X_b.to(device), y_b.to(device)
-                val_loss += criterion(model(X_b), y_b.unsqueeze(1)).item()
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    val_loss += criterion(model(X_b), y_b.unsqueeze(1)).item()
             val_loss /= len(val_loader_tmp)
 
         if val_loss < best_val_loss:
@@ -131,6 +140,7 @@ def train_mlp_focal(X_trn, y_trn, X_val, y_val, device, epochs=15, lr=0.001, bat
     preds = []
     with torch.no_grad():
         for X_b, _ in val_loader:
-            preds.append(torch.sigmoid(model(X_b.to(device))).cpu().numpy())
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                preds.append(torch.sigmoid(model(X_b.to(device))).cpu().numpy())
 
     return np.concatenate(preds).flatten(), model

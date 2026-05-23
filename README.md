@@ -139,14 +139,14 @@ Windows:
 
 ```powershell
 .\scripts\setup_local_env.ps1
-.\scripts\run_full_experiment.ps1 -Dataset both -Device cuda
+.\scripts\run_full_experiment.ps1
 ```
 
 Linux/macOS:
 
 ```bash
 bash scripts/setup_local_env.sh
-bash scripts/run_full_experiment.sh --dataset both --device cuda
+bash scripts/run_full_experiment.sh
 ```
 
 ## Dataset Setup
@@ -220,17 +220,14 @@ py -3.9 scripts/generate_paysim_submission_notebook.py
 
 The generated notebooks include markdown that explains the current experimental scope, the IEEE-CIS and PaySim benchmark coverage, and the fact that ULB remains future work.
 
-To run the full training pipeline:
+To run the canonical end-to-end academic experiment:
 
 ```bash
-# IEEE-CIS
-python main_train_pipeline.py --dataset ieee --data_dir data --device cuda
-
-# PaySim
-python main_train_pipeline.py --dataset paysim --data_dir data --device cuda
+python run_academic_e2e.py
 ```
 
-The training pipeline now performs:
+This single runner performs the fixed research protocol for both IEEE-CIS and
+PaySim:
 
 - temporal holdout split first
 - walk-forward CV only on the training slice
@@ -239,16 +236,15 @@ The training pipeline now performs:
 - final base-model refit with an internal validation slice
 - separate holdout evaluation, drift audit, fairness audit, HITL routing, meta-level XAI, latency benchmarking, and statistical comparison
 
-Useful runtime controls:
-
-```bash
-python main_train_pipeline.py --dataset paysim --data_dir data --device cpu --test_ratio 0.2 --n_splits 5 --gap_size 1000 --n_seeds 5 --smote_strategy 0.3 --ctgan_samples 0
-```
+The runner intentionally has no CLI switches. The project keeps
+`main_train_pipeline.py` as the backend implementation, but the official
+experiment path is `run_academic_e2e.py` so the submitted protocol does not
+split into multiple selectable configurations.
 
 Generated holdout predictions are saved under `artifacts/`, for example:
 
-- `artifacts/ieee_holdout_predictions.csv`
-- `artifacts/paysim_holdout_predictions.csv`
+- `artifacts/academic_e2e/ieee_academic_full/seed_*/ieee_holdout_predictions.csv`
+- `artifacts/academic_e2e/paysim_academic_full/seed_*/paysim_holdout_predictions.csv`
 
 ## Key Hyperparameters
 

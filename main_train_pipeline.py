@@ -19,6 +19,7 @@ import argparse
 import gc
 import importlib.util
 import json
+import os
 import random
 from types import SimpleNamespace
 import time
@@ -53,6 +54,10 @@ def print_section(title):
     print("\n" + "=" * 60)
     print(title)
     print("=" * 60)
+
+
+def env_flag(name, default="0"):
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def module_available(module_name):
@@ -97,6 +102,134 @@ def build_feature_frame(df, dataset, fit_idx=None):
         preserve_cols=["isFraud", "TransactionID", "TransactionDT", "UID"],
     )
     return df
+
+
+def _dataset_fingerprint(data_dir, dataset):
+    data_dir = Path(data_dir)
+    paths = []
+    if dataset == "ieee":
+        paths = [data_dir / "train_transaction.csv", data_dir / "train_identity.csv"]
+    elif dataset == "paysim":
+        resolved = DataLoader._resolve_paysim_path(str(data_dir))
+        paths = [Path(resolved)] if resolved is not None else []
+
+    fingerprint = []
+    for path in paths:
+        if not path.exists():
+            fingerprint.append({"path": str(path), "exists": False})
+            continue
+        stat = path.stat()
+        fingerprint.append(
+            {
+                "path": str(path.resolve()),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        )
+    return fingerprint
+
+
+def _feature_cache_metadata(
+    data_dir,
+    dataset,
+    test_ratio,
+    n_splits,
+    gap_size,
+    paysim_chunk_size,
+    paysim_max_rows,
+    paysim_step_block_size,
+):
+    return {
+        "dataset": dataset,
+        "data_dir": str(Path(data_dir).resolve()),
+        "data_fingerprint": _dataset_fingerprint(data_dir, dataset),
+        "test_ratio": float(test_ratio),
+        "n_splits": int(n_splits),
+        "gap_size": int(gap_size),
+        "paysim_chunk_size": None if paysim_chunk_size is None else int(paysim_chunk_size),
+        "paysim_max_rows": None if paysim_max_rows is None else int(paysim_max_rows),
+        "paysim_step_block_size": None if paysim_step_block_size is None else int(paysim_step_block_size),
+        "feature_pipeline": "tabular_categoricals_uid_behavioral_nan70_v1",
+    }
+
+
+def _feature_cache_dir(dataset, metadata):
+    root = Path(os.getenv("MVS_XAI_FEATURE_CACHE_DIR", "artifacts/cache/features"))
+    key = (
+        f"{dataset}"
+        f"_tr{metadata['test_ratio']}"
+        f"_spl{metadata['n_splits']}"
+        f"_gap{metadata['gap_size']}"
+        f"_chunk{metadata['paysim_chunk_size']}"
+        f"_max{metadata['paysim_max_rows']}"
+        f"_step{metadata['paysim_step_block_size']}"
+    )
+    return root / key.replace(".", "p")
+
+
+def _load_feature_cache(cache_dir, metadata):
+    meta_path = cache_dir / "metadata.json"
+    required = [
+        meta_path,
+        cache_dir / "df.pkl",
+        cache_dir / "X.npy",
+        cache_dir / "y.npy",
+        cache_dir / "entity_ids.npy",
+        cache_dir / "train_idx.npy",
+        cache_dir / "holdout_idx.npy",
+        cache_dir / "feature_cols.json",
+    ]
+    if not all(path.exists() for path in required):
+        return None
+
+    try:
+        cached_metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        if cached_metadata != metadata:
+            print("  Feature cache metadata mismatch; rebuilding cache.")
+            return None
+
+        print(f"  Loading feature cache: {cache_dir}")
+        df = pd.read_pickle(cache_dir / "df.pkl")
+        X = np.load(cache_dir / "X.npy", mmap_mode="r")
+        y = np.load(cache_dir / "y.npy", mmap_mode="r")
+        entity_ids = np.load(cache_dir / "entity_ids.npy", mmap_mode="r")
+        train_idx = np.load(cache_dir / "train_idx.npy")
+        holdout_idx = np.load(cache_dir / "holdout_idx.npy")
+        feature_cols = json.loads((cache_dir / "feature_cols.json").read_text(encoding="utf-8"))
+        splitter = TemporalSplitter(n_splits=metadata["n_splits"], gap_size=metadata["gap_size"])
+        return SimpleNamespace(
+            df=df,
+            X=X,
+            y=y,
+            entity_ids=entity_ids,
+            feature_cols=feature_cols,
+            train_idx=train_idx,
+            holdout_idx=holdout_idx,
+            splitter=splitter,
+        )
+    except Exception as exc:
+        print(f"  Feature cache load failed ({exc}); rebuilding cache.")
+        return None
+
+
+def _save_feature_cache(cache_dir, metadata, payload):
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / "metadata.json").write_text(
+            json.dumps(metadata, indent=2), encoding="utf-8"
+        )
+        payload.df.to_pickle(cache_dir / "df.pkl")
+        np.save(cache_dir / "X.npy", np.asarray(payload.X, dtype=np.float32))
+        np.save(cache_dir / "y.npy", np.asarray(payload.y, dtype=np.int8))
+        np.save(cache_dir / "entity_ids.npy", np.asarray(payload.entity_ids))
+        np.save(cache_dir / "train_idx.npy", np.asarray(payload.train_idx, dtype=np.int64))
+        np.save(cache_dir / "holdout_idx.npy", np.asarray(payload.holdout_idx, dtype=np.int64))
+        (cache_dir / "feature_cols.json").write_text(
+            json.dumps(list(payload.feature_cols), indent=2), encoding="utf-8"
+        )
+        print(f"  Saved feature cache: {cache_dir}")
+    except Exception as exc:
+        print(f"  Feature cache save skipped: {exc}")
 
 
 def resolve_model_profile(preset="auto", model_profile=None):
@@ -627,6 +760,34 @@ def benchmark_decision_latency(
     return {"median_ms": median_ms, "target_met": bool(median_ms < 50.0)}
 
 
+def diagnostic_sample_pair(X_train, X_holdout, feature_cols, seed=42):
+    """Sample large matrices for diagnostics without changing train/eval scores."""
+    max_rows = int(os.getenv("MVS_XAI_DIAGNOSTIC_MAX_ROWS", "300000"))
+    if max_rows <= 0:
+        return X_train, X_holdout
+
+    rng = np.random.default_rng(seed)
+    train_idx = None
+    holdout_idx = None
+    if len(X_train) > max_rows:
+        train_idx = np.sort(rng.choice(len(X_train), size=max_rows, replace=False))
+    if len(X_holdout) > max_rows:
+        holdout_idx = np.sort(rng.choice(len(X_holdout), size=max_rows, replace=False))
+
+    if train_idx is None and holdout_idx is None:
+        return X_train, X_holdout
+
+    X_train_diag = X_train if train_idx is None else X_train[train_idx]
+    X_holdout_diag = X_holdout if holdout_idx is None else X_holdout[holdout_idx]
+    print(
+        "\n  Diagnostic sampling: "
+        f"train {len(X_train):,}->{len(X_train_diag):,}, "
+        f"holdout {len(X_holdout):,}->{len(X_holdout_diag):,}, "
+        f"features={len(feature_cols)}"
+    )
+    return X_train_diag, X_holdout_diag
+
+
 def prepare_pipeline_payload(
     data_dir="data/",
     dataset="ieee",
@@ -638,6 +799,25 @@ def prepare_pipeline_payload(
     paysim_step_block_size=24,
 ):
     print_section("PHASE 1: Data Loading and Feature Engineering")
+    cache_enabled = env_flag("MVS_XAI_FEATURE_CACHE", "0")
+    cache_metadata = _feature_cache_metadata(
+        data_dir=data_dir,
+        dataset=dataset,
+        test_ratio=test_ratio,
+        n_splits=n_splits,
+        gap_size=gap_size,
+        paysim_chunk_size=paysim_chunk_size,
+        paysim_max_rows=paysim_max_rows,
+        paysim_step_block_size=paysim_step_block_size,
+    )
+    cache_dir = _feature_cache_dir(dataset, cache_metadata)
+    if cache_enabled:
+        cached_payload = _load_feature_cache(cache_dir, cache_metadata)
+        if cached_payload is not None:
+            print(f"\n  Final dataset: {cached_payload.X.shape[0]:,} samples x {cached_payload.X.shape[1]} features")
+            print(f"  Fraud rate: {np.asarray(cached_payload.y).mean() * 100:.2f}%")
+            return cached_payload
+
     loader_kwargs = {}
     if dataset == "paysim":
         loader_kwargs = {
@@ -664,7 +844,7 @@ def prepare_pipeline_payload(
     print(f"\n  Final dataset: {X.shape[0]:,} samples x {X.shape[1]} features")
     print(f"  Fraud rate: {y.mean() * 100:.2f}%")
 
-    return SimpleNamespace(
+    payload = SimpleNamespace(
         df=df,
         X=X,
         y=y,
@@ -674,6 +854,9 @@ def prepare_pipeline_payload(
         holdout_idx=holdout_idx,
         splitter=splitter,
     )
+    if cache_enabled:
+        _save_feature_cache(cache_dir, cache_metadata, payload)
+    return payload
 
 
 def run_single_seed(
@@ -999,10 +1182,13 @@ def run_single_seed(
     ablation = AblationStudy()
     ablation.run_leave_one_out(gated_train_predictions, y_train_meta, active_models)
 
+    X_train_diag, X_holdout_diag = diagnostic_sample_pair(
+        X_train_all, X_holdout, feature_cols, seed=seed
+    )
     psi = PSIDriftMonitor()
-    psi.monitor_features(X_train_all, X_holdout, feature_cols)
+    psi.monitor_features(X_train_diag, X_holdout_diag, feature_cols)
     psi.monitor_score_drift(meta_train_result["probabilities"], gated_holdout_probas)
-    wasserstein_drift_report(X_train_all, X_holdout, feature_cols, threshold=0.1)
+    wasserstein_drift_report(X_train_diag, X_holdout_diag, feature_cols, threshold=0.1)
     adwin = ADWINDriftMonitor(delta=0.002)
     adwin_result = adwin.monitor_score_stream(meta_train_result["probabilities"], gated_holdout_probas)
 

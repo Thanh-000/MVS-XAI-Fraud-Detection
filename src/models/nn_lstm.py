@@ -8,6 +8,7 @@ Loss: Focal Loss (γ=2.0, α=0.75)
 Training: Full epochs + best-state tracking (NO early stopping).
 """
 import numpy as np
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -55,6 +56,7 @@ def iter_sequence_batches(X_seq, y=None, batch_size=4096, shuffle=False, seed=42
     GB of RAM.
     """
     n_samples = len(X_seq)
+    y_array = None if y is None else np.asarray(y, dtype=np.float32)
     if shuffle:
         rng = np.random.default_rng(seed)
         indices = rng.permutation(n_samples)
@@ -70,10 +72,10 @@ def iter_sequence_batches(X_seq, y=None, batch_size=4096, shuffle=False, seed=42
         else:
             X_batch = X_seq[batch_idx]
 
-        if y is None:
+        if y_array is None:
             y_batch = np.zeros(len(batch_idx), dtype=np.float32)
         else:
-            y_batch = np.asarray(y, dtype=np.float32)[batch_idx]
+            y_batch = y_array[batch_idx]
         yield torch.as_tensor(X_batch, dtype=torch.float32), torch.as_tensor(y_batch, dtype=torch.float32)
 
 
@@ -142,6 +144,11 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
     model = LSTMFraud(n_features).to(device)
     criterion = FocalLoss(alpha=0.75, gamma=2.0)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    use_amp = (
+        os.getenv("MVS_XAI_TORCH_AMP", "1") == "1"
+        and getattr(device, "type", str(device)) == "cuda"
+    )
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     best_val_loss = float('inf')
     best_ep = 0
@@ -155,9 +162,11 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
         ):
             X_b, y_b = X_b.to(device), y_b.to(device)
             optimizer.zero_grad()
-            loss = criterion(model(X_b), y_b.unsqueeze(1))
-            loss.backward()
-            optimizer.step()
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                loss = criterion(model(X_b), y_b.unsqueeze(1))
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
         # --- Best-state tracking (NO early stopping) ---
         model.eval()
@@ -166,7 +175,8 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
             n_val_batches = 0
             for X_b, y_b in iter_sequence_batches(X_seq_val, y_val, batch_size=batch_size, shuffle=False):
                 X_b, y_b = X_b.to(device), y_b.to(device)
-                val_loss += criterion(model(X_b), y_b.unsqueeze(1)).item()
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    val_loss += criterion(model(X_b), y_b.unsqueeze(1)).item()
                 n_val_batches += 1
             val_loss /= max(n_val_batches, 1)
 
@@ -185,6 +195,7 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
     preds = []
     with torch.no_grad():
         for X_b, _ in iter_sequence_batches(X_seq_val, batch_size=batch_size, shuffle=False):
-            preds.append(torch.sigmoid(model(X_b.to(device))).cpu().numpy())
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                preds.append(torch.sigmoid(model(X_b.to(device))).cpu().numpy())
 
     return np.concatenate(preds).flatten(), model

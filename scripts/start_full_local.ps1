@@ -1,10 +1,5 @@
 param(
-    [ValidateSet("ieee", "paysim", "both")]
-    [string]$Dataset = "ieee",
-    [ValidateSet("cpu", "cuda")]
-    [string]$Device = "cpu",
-    [int]$Threads = 12,
-    [string]$ArtifactsRoot = "artifacts/local_full",
+    [int]$Threads = 4,
     [string]$JobRoot = "artifacts/local_full/jobs"
 )
 
@@ -18,7 +13,7 @@ if (!(Test-Path $venvPython)) {
 
 New-Item -ItemType Directory -Force -Path $JobRoot | Out-Null
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$jobName = "full_${Dataset}_${Device}_${timestamp}"
+$jobName = "academic_e2e_${timestamp}"
 $jobDir = Join-Path $JobRoot $jobName
 New-Item -ItemType Directory -Force -Path $jobDir | Out-Null
 
@@ -32,23 +27,23 @@ Set-Location '$repoRoot'
 `$env:PYTHONUNBUFFERED = "1"
 `$env:OMP_NUM_THREADS = "$Threads"
 `$env:MKL_NUM_THREADS = "$Threads"
+`$env:OPENBLAS_NUM_THREADS = "$Threads"
 `$env:NUMEXPR_NUM_THREADS = "$Threads"
 
 `$started = Get-Date
 `$status = [ordered]@{
     job = '$jobName'
-    dataset = '$Dataset'
-    device = '$Device'
+    run_type = 'academic_e2e'
     started = `$started.ToString("o")
     finished = `$null
     exit_code = `$null
     log = '$logPath'
-    artifacts_root = '$ArtifactsRoot'
+    artifacts_root = 'artifacts/academic_e2e'
 }
 `$status | ConvertTo-Json | Set-Content -Encoding UTF8 '$statusPath'
 
 try {
-    & '$repoRoot\scripts\run_full_experiment.ps1' -Dataset '$Dataset' -Device '$Device' -ArtifactsRoot '$ArtifactsRoot' 2>&1 | Tee-Object -FilePath '$logPath'
+    & '$repoRoot\scripts\run_full_experiment.ps1' 2>&1 | Tee-Object -FilePath '$logPath'
     `$exitCode = if (`$null -eq `$LASTEXITCODE) { 0 } else { `$LASTEXITCODE }
 }
 catch {
@@ -74,6 +69,5 @@ $proc = Start-Process -FilePath powershell.exe `
     Pid = $proc.Id
     Log = $logPath
     Status = $statusPath
-    ArtifactsRoot = $ArtifactsRoot
+    ArtifactsRoot = "artifacts/academic_e2e"
 }
-

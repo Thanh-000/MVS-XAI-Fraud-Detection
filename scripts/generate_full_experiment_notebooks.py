@@ -362,81 +362,38 @@ def download_helpers_code() -> str:
 
 
 def run_pipeline_code(dataset: str) -> str:
-    paysim_constants = ""
-    paysim_run_config_update = ""
-    paysim_pipeline_kwargs_update = ""
-    if dataset == "paysim":
-        paysim_constants = """
-    PIPELINE_PAYSIM_CHUNK_SIZE = 750000
-    PIPELINE_PAYSIM_MAX_ROWS = None
-    PIPELINE_PAYSIM_STEP_BLOCK_SIZE = 24
-"""
-        paysim_run_config_update = """
-    run_config.update(
-        {
-            "paysim_chunk_size": PIPELINE_PAYSIM_CHUNK_SIZE,
-            "paysim_max_rows": PIPELINE_PAYSIM_MAX_ROWS,
-            "paysim_step_block_size": PIPELINE_PAYSIM_STEP_BLOCK_SIZE,
-        }
-    )
-"""
-        paysim_pipeline_kwargs_update = """
-            pipeline_kwargs.update(
-                {
-                    "paysim_chunk_size": PIPELINE_PAYSIM_CHUNK_SIZE,
-                    "paysim_max_rows": PIPELINE_PAYSIM_MAX_ROWS,
-                    "paysim_step_block_size": PIPELINE_PAYSIM_STEP_BLOCK_SIZE,
-                }
-            )
-"""
-
     return f"""
     import contextlib
-    import inspect
+    import json
     from datetime import datetime, timezone
 
     from IPython.display import display
 
+    from run_academic_e2e import ACADEMIC_CONFIG, configure_runtime_accelerators
     from main_train_pipeline import main as run_mvs_xai_pipeline
 
     DATASET = "{dataset}"
     METHOD_NAME = "MVS-XAI Triple-View Stacking with Confidence Gating, UID smoothing, XAI, HITL"
 
-    # Full research is the default. Set RUN_FULL_RESEARCH=False only for a
-    # quick smoke/debug run before the final academic sweep.
-    RUN_FULL_RESEARCH = True
-    PIPELINE_PRESET = "full_mvs"
-    PIPELINE_MODEL_PROFILE = "research"
-    PIPELINE_DEVICE = "cuda"
-    PIPELINE_TEST_RATIO = 0.15
-    PIPELINE_N_SPLITS = 5
-    PIPELINE_GAP_SIZE = 1000
-    PIPELINE_SEED = 42
-    PIPELINE_N_SEEDS = 3
-    PIPELINE_SMOTE_STRATEGY = 0.30
-    PIPELINE_CTGAN_SAMPLES = 0
-    PIPELINE_CTGAN_EPOCHS = 30
-    PIPELINE_MLP_EPOCHS = 15
-    PIPELINE_LSTM_EPOCHS = 12
+    configure_runtime_accelerators()
+    RUN_LABEL = "academic_full"
+    pipeline_kwargs = dict(ACADEMIC_CONFIG)
+    pipeline_kwargs.update(
+        {{
+            "dataset": DATASET,
+            "data_dir": str(DATA_DIR),
+            "artifacts_dir": str(REPO_ROOT / "artifacts" / f"{{DATASET}}_academic_full"),
+        }}
+    )
+    PIPELINE_PRESET = pipeline_kwargs["preset"]
+    PIPELINE_MODEL_PROFILE = pipeline_kwargs["model_profile"]
+    PIPELINE_N_SEEDS = pipeline_kwargs["n_seeds"]
+    PIPELINE_N_SPLITS = pipeline_kwargs["n_splits"]
     LOG_TAIL_LINES = 120
-{paysim_constants}
-
-    if not RUN_FULL_RESEARCH:
-        PIPELINE_PRESET = "fast_mvs"
-        PIPELINE_MODEL_PROFILE = "fast"
-        PIPELINE_N_SPLITS = 3
-        PIPELINE_N_SEEDS = 1
-        PIPELINE_SMOTE_STRATEGY = 0.10
-        PIPELINE_MLP_EPOCHS = 6
-        PIPELINE_LSTM_EPOCHS = 4
-        if DATASET == "paysim":
-            PIPELINE_PAYSIM_MAX_ROWS = 1500000
-        METHOD_NAME = METHOD_NAME + " (Colab fast profile: LSTM branch disabled)"
-
-    RUN_LABEL = "academic_full" if RUN_FULL_RESEARCH else "academic_colab_fast"
     ARTIFACTS_DIR = REPO_ROOT / "artifacts" / f"{{DATASET}}_{{RUN_LABEL}}"
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     LOG_PATH = ARTIFACTS_DIR / f"{{DATASET}}_{{RUN_LABEL}}_train.log"
+    pipeline_kwargs["artifacts_dir"] = str(ARTIFACTS_DIR)
 
     run_config = {{
         "run_utc": datetime.now(timezone.utc).isoformat(),
@@ -445,23 +402,10 @@ def run_pipeline_code(dataset: str) -> str:
         "repo_root": str(REPO_ROOT),
         "data_dir": str(DATA_DIR),
         "artifacts_dir": str(ARTIFACTS_DIR),
-        "run_full_research": RUN_FULL_RESEARCH,
+        "execution_path": "canonical_notebook_using_ACADEMIC_CONFIG",
         "run_label": RUN_LABEL,
-        "preset": PIPELINE_PRESET,
-        "model_profile": PIPELINE_MODEL_PROFILE,
-        "device": PIPELINE_DEVICE,
-        "test_ratio": PIPELINE_TEST_RATIO,
-        "n_splits": PIPELINE_N_SPLITS,
-        "gap_size": PIPELINE_GAP_SIZE,
-        "seed": PIPELINE_SEED,
-        "n_seeds": PIPELINE_N_SEEDS,
-        "smote_strategy": PIPELINE_SMOTE_STRATEGY,
-        "ctgan_samples": PIPELINE_CTGAN_SAMPLES,
-        "ctgan_epochs": PIPELINE_CTGAN_EPOCHS,
-        "mlp_epochs": PIPELINE_MLP_EPOCHS,
-        "lstm_epochs": PIPELINE_LSTM_EPOCHS,
+        **pipeline_kwargs,
     }}
-{paysim_run_config_update}
     (ARTIFACTS_DIR / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
 
     print("Research method:", METHOD_NAME)
@@ -470,42 +414,7 @@ def run_pipeline_code(dataset: str) -> str:
 
     with LOG_PATH.open("w", encoding="utf-8") as log_file:
         with contextlib.redirect_stdout(log_file), contextlib.redirect_stderr(log_file):
-            pipeline_kwargs = {{
-                "data_dir": str(DATA_DIR),
-                "device": PIPELINE_DEVICE,
-                "dataset": DATASET,
-                "test_ratio": PIPELINE_TEST_RATIO,
-                "n_splits": PIPELINE_N_SPLITS,
-                "gap_size": PIPELINE_GAP_SIZE,
-                "seed": PIPELINE_SEED,
-                "n_seeds": PIPELINE_N_SEEDS,
-                "smote_strategy": PIPELINE_SMOTE_STRATEGY,
-                "ctgan_samples": PIPELINE_CTGAN_SAMPLES,
-                "ctgan_epochs": PIPELINE_CTGAN_EPOCHS,
-                "preset": PIPELINE_PRESET,
-                "model_profile": PIPELINE_MODEL_PROFILE,
-                "mlp_epochs": PIPELINE_MLP_EPOCHS,
-                "lstm_epochs": PIPELINE_LSTM_EPOCHS,
-                "artifacts_dir": str(ARTIFACTS_DIR),
-            }}
-{paysim_pipeline_kwargs_update}
-            signature = inspect.signature(run_mvs_xai_pipeline)
-            accepted_kwargs = {{
-                key: value
-                for key, value in pipeline_kwargs.items()
-                if key in signature.parameters
-            }}
-            dropped_kwargs = sorted(set(pipeline_kwargs) - set(accepted_kwargs))
-            if dropped_kwargs:
-                print(
-                    "Warning: pipeline function does not accept these notebook parameters: "
-                    + ", ".join(dropped_kwargs)
-                )
-                print(
-                    "The notebook should have checked out the expected Git branch. "
-                    "If this warning persists, rerun the clone/setup cell."
-                )
-            seed_results = run_mvs_xai_pipeline(**accepted_kwargs)
+            seed_results = run_mvs_xai_pipeline(**pipeline_kwargs)
 
     print(f"Training log saved to: {{LOG_PATH}}")
     print(f"Artifacts directory: {{ARTIFACTS_DIR}}")
@@ -1111,7 +1020,7 @@ def report_code(dataset_label: str, dataset: str) -> str:
 
     - Dataset: {dataset_label}
     - Run label: {{RUN_LABEL}}
-    - Full research mode: {{RUN_FULL_RESEARCH}}
+    - Execution path: canonical fixed academic E2E runner
     - Pipeline preset: {{PIPELINE_PRESET}}
     - Model profile: {{PIPELINE_MODEL_PROFILE}}
     - Data source: direct signed Kaggle bundle downloaded with `aria2c`

@@ -1,26 +1,57 @@
-# Local Full Experiment Setup
+# Canonical End-to-End Academic Experiment
 
-This guide runs the same full research configuration as the academic notebooks:
+The project now has one official experiment runner:
+
+```bash
+python run_academic_e2e.py
+```
+
+This runner has no CLI switches by design. It runs the fixed academic protocol
+for both supported datasets:
+
+- IEEE-CIS
+- PaySim
+
+The backend remains `main_train_pipeline.py`, but the submitted experiment
+should be launched through `run_academic_e2e.py` or the wrapper scripts below.
+
+## Fixed Research Configuration
+
+The runner keeps the original full research settings:
 
 - `preset=full_mvs`
 - `model_profile=research`
+- `device=cuda`
+- `test_ratio=0.15`
 - `n_splits=5`
+- `gap_size=1000`
+- `seed=42`
 - `n_seeds=3`
 - `smote_strategy=0.30`
-- PaySim uses all rows by default.
+- `ctgan_samples=0`
+- `ctgan_epochs=30`
+- `mlp_epochs=15`
+- `lstm_epochs=12`
+- `paysim_chunk_size=750000`
+- `paysim_step_block_size=24`
+
+The runner also enables runtime accelerators that preserve the protocol:
+
+- KMeansSMOTE remains the oversampling method and keeps `sampling_strategy=0.30`.
+- KMeansSMOTE uses MiniBatchKMeans as the clustering backend.
+- LSTM sequence batches are materialized lazily.
+- BLAS/OpenMP thread counts are capped to reduce oversubscription.
 
 ## Hardware Notes
 
-Full PaySim is large: about 6.36M rows before feature engineering. Use a machine with:
+Full PaySim is large: about 6.36M rows before feature engineering. Use:
 
 - 32 GB RAM minimum for IEEE-CIS.
 - 64 GB RAM recommended for PaySim full research.
 - NVIDIA GPU recommended for PyTorch, XGBoost, and CatBoost acceleration.
 - 40 GB free disk minimum; more if keeping multiple artifact runs.
 
-The pipeline includes memory optimizations for full research mode, but full PaySim remains computationally heavy by design.
-
-## 1. Create Local Environment
+## Setup
 
 Windows PowerShell:
 
@@ -29,25 +60,13 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\setup_local_env.ps1
 ```
 
-Windows PowerShell with CUDA PyTorch wheel index:
-
-```powershell
-.\scripts\setup_local_env.ps1 -CudaTorch
-```
-
 Linux/macOS:
 
 ```bash
 bash scripts/setup_local_env.sh
 ```
 
-Linux with CUDA PyTorch wheel index:
-
-```bash
-bash scripts/setup_local_env.sh --cuda-torch
-```
-
-After installation, verify:
+Verify the environment:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\check_local_env.py
@@ -59,7 +78,7 @@ or:
 .venv/bin/python scripts/check_local_env.py
 ```
 
-## 2. Prepare Data
+## Data
 
 Place the dataset files under `data/`.
 
@@ -75,88 +94,38 @@ PaySim requires one CSV under `data/`, for example:
 - `data/paysim_log.csv`
 - `data/paysim dataset.csv`
 
-The Colab signed URLs are time-limited. For local experiments, refresh the Kaggle download links or use the Kaggle API after accepting dataset/competition terms.
+## Run
 
-## 3. Run Full Research Experiments
-
-Run both datasets:
+Windows:
 
 ```powershell
-.\scripts\run_full_experiment.ps1 -Dataset both -Device cuda
-```
-
-Run only IEEE-CIS:
-
-```powershell
-.\scripts\run_full_experiment.ps1 -Dataset ieee -Device cuda
-```
-
-Run only PaySim:
-
-```powershell
-.\scripts\run_full_experiment.ps1 -Dataset paysim -Device cuda
+.\scripts\run_full_experiment.ps1
 ```
 
 Linux/macOS:
 
 ```bash
-bash scripts/run_full_experiment.sh --dataset both --device cuda
+bash scripts/run_full_experiment.sh
 ```
 
-CPU fallback is supported but much slower:
+Direct Python:
+
+```bash
+python run_academic_e2e.py
+```
+
+Background Windows run:
 
 ```powershell
-.\scripts\run_full_experiment.ps1 -Dataset ieee -Device cpu
+.\scripts\start_full_local.ps1
 ```
 
-## 4. Direct Python Commands
-
-IEEE-CIS full research:
-
-```bash
-python main_train_pipeline.py \
-  --dataset ieee \
-  --data_dir data \
-  --device cuda \
-  --test_ratio 0.15 \
-  --n_splits 5 \
-  --gap_size 1000 \
-  --seed 42 \
-  --n_seeds 3 \
-  --smote_strategy 0.30 \
-  --ctgan_samples 0 \
-  --preset full_mvs \
-  --model_profile research \
-  --artifacts_dir artifacts/local_full/ieee_academic_full
-```
-
-PaySim full research:
-
-```bash
-python main_train_pipeline.py \
-  --dataset paysim \
-  --data_dir data \
-  --device cuda \
-  --test_ratio 0.15 \
-  --n_splits 5 \
-  --gap_size 1000 \
-  --seed 42 \
-  --n_seeds 3 \
-  --smote_strategy 0.30 \
-  --ctgan_samples 0 \
-  --paysim_chunk_size 750000 \
-  --paysim_step_block_size 24 \
-  --preset full_mvs \
-  --model_profile research \
-  --artifacts_dir artifacts/local_full/paysim_academic_full
-```
-
-## 5. Outputs
+## Outputs
 
 Artifacts are written under:
 
-- `artifacts/local_full/ieee_academic_full`
-- `artifacts/local_full/paysim_academic_full`
+- `artifacts/academic_e2e/ieee_academic_full`
+- `artifacts/academic_e2e/paysim_academic_full`
 
 Important files:
 
@@ -165,4 +134,3 @@ Important files:
 - `seed_*/xai/meta_shap_global.csv`
 - `seed_*/xai/meta_shap_top_risk_local.csv`
 - `seed_*/*_holdout_predictions.csv`
-

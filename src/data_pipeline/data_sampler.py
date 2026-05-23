@@ -14,6 +14,11 @@ except ImportError:
     RandomOverSampler = None
 
 try:
+    from sklearn.cluster import MiniBatchKMeans
+except ImportError:
+    MiniBatchKMeans = None
+
+try:
     from sdv.single_table import CTGANSynthesizer
     from sdv.metadata import SingleTableMetadata
 except ImportError:
@@ -51,13 +56,14 @@ class DataBalanceEngine:
         bincount = np.bincount(y_train)
         large_threshold = int(os.getenv("MVS_XAI_LARGE_SMOTE_ROWS", "1000000"))
         large_max_strategy = float(os.getenv("MVS_XAI_LARGE_SMOTE_MAX_STRATEGY", "0.10"))
-        if n_rows >= large_threshold and RandomOverSampler is not None:
+        disable_large_ros = os.getenv("MVS_XAI_DISABLE_LARGE_ROS", "0") == "1"
+        if n_rows >= large_threshold and RandomOverSampler is not None and not disable_large_ros:
             effective_strategy = min(float(strategy), large_max_strategy)
             print(
                 f"  Large-data oversampling: RandomOverSampler "
                 f"(strategy={effective_strategy}, rows={n_rows:,}); "
                 "skipping KMeansSMOTE to avoid O(n*k*iter) K-Means cost. "
-                "Override with MVS_XAI_LARGE_SMOTE_MAX_STRATEGY if needed."
+                "Set MVS_XAI_DISABLE_LARGE_ROS=1 to preserve KMeansSMOTE."
             )
             sampler = RandomOverSampler(
                 sampling_strategy=effective_strategy,
@@ -70,11 +76,30 @@ class DataBalanceEngine:
 
         print(f"  KMeansSMOTE (strategy={strategy})...")
         try:
+            sampler_kwargs = {
+                "sampling_strategy": strategy,
+                "random_state": self.random_state,
+                "k_neighbors": 5,
+                "cluster_balance_threshold": 0.1,
+            }
+            use_minibatch = os.getenv("MVS_XAI_KMEANSSMOTE_MINIBATCH", "0") == "1"
+            if use_minibatch and MiniBatchKMeans is not None:
+                n_clusters = int(os.getenv("MVS_XAI_KMEANSSMOTE_CLUSTERS", "32"))
+                batch_size = int(os.getenv("MVS_XAI_KMEANSSMOTE_BATCH_SIZE", "65536"))
+                max_iter = int(os.getenv("MVS_XAI_KMEANSSMOTE_MAX_ITER", "100"))
+                sampler_kwargs["kmeans_estimator"] = MiniBatchKMeans(
+                    n_clusters=n_clusters,
+                    batch_size=batch_size,
+                    max_iter=max_iter,
+                    n_init="auto",
+                    random_state=self.random_state,
+                )
+                print(
+                    "    KMeansSMOTE accelerator: MiniBatchKMeans "
+                    f"(clusters={n_clusters}, batch_size={batch_size:,}, max_iter={max_iter})"
+                )
             sampler = KMeansSMOTE(
-                sampling_strategy=strategy,
-                random_state=self.random_state,
-                k_neighbors=5,
-                cluster_balance_threshold=0.1
+                **sampler_kwargs
             )
             X_res, y_res = sampler.fit_resample(X_train, y_train)
         except Exception as e:
