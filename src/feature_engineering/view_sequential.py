@@ -3,7 +3,7 @@ View 2: Sequential Feature Construction — 3D tensor builder for LSTM.
 Matches notebook 06 — backward-only sliding window (T=10).
 """
 import numpy as np
-from collections import defaultdict
+import pandas as pd
 
 
 class ZeroSequenceArray:
@@ -34,6 +34,45 @@ class ZeroSequenceArray:
         return np.zeros((n_rows, self.shape[1], self.shape[2]), dtype=np.float32)
 
 
+class IndexedSequenceArray:
+    """Lazy sequence tensor backed by an index matrix.
+
+    This avoids materializing an (N, T, F) tensor for large datasets. The
+    sequence index matrix stores the previous row indices for each sample; -1
+    means left-padding with zeros.
+    """
+
+    is_indexed_sequence = True
+
+    def __init__(self, X, seq_indices):
+        self.X = np.asarray(X, dtype=np.float32)
+        self.seq_indices = np.asarray(seq_indices, dtype=np.int32)
+        self.shape = (
+            int(self.seq_indices.shape[0]),
+            int(self.seq_indices.shape[1]),
+            int(self.X.shape[1]),
+        )
+        self.dtype = np.float32
+
+    def __len__(self):
+        return self.shape[0]
+
+    def get_batch(self, item):
+        idx = np.arange(self.shape[0])[item] if isinstance(item, slice) else np.asarray(item)
+        scalar = idx.ndim == 0
+        idx = idx.reshape(1) if scalar else idx
+
+        seq_idx = self.seq_indices[idx]
+        out = np.zeros((len(idx), self.shape[1], self.shape[2]), dtype=np.float32)
+        valid = seq_idx >= 0
+        if valid.any():
+            out[valid] = self.X[seq_idx[valid]]
+        return out[0] if scalar else out
+
+    def __getitem__(self, item):
+        return self.get_batch(item)
+
+
 class SequentialTensorBuilder:
     """Build 3D tensor [N, T, F] for LSTM from 2D tabular data.
 
@@ -54,31 +93,46 @@ class SequentialTensorBuilder:
         Returns:
             Numpy array of shape [N, seq_len, F].
         """
+        X = np.asarray(X, dtype=np.float32)
         n_samples, n_features = X.shape
-        if np.unique(entity_ids).size == n_samples:
+        entity_ids = np.asarray(entity_ids)
+
+        if pd.Index(entity_ids).is_unique:
             print(f"  View 2 (Sequential): Unique entities; using lazy zero tensor "
                   f"({n_samples}, {self.seq_len}, {n_features})")
             return ZeroSequenceArray(n_samples, self.seq_len, n_features)
 
-        sequences = np.zeros((n_samples, self.seq_len, n_features), dtype=np.float32)
-        card_history = defaultdict(list)
-        entity_ids = np.asarray(entity_ids)
+        codes = pd.factorize(entity_ids, sort=False)[0].astype(np.int64, copy=False)
+        order = np.argsort(codes, kind="stable")
+        sorted_codes = codes[order]
 
-        for idx in range(n_samples):
-            card_id = entity_ids[idx]
-            history = card_history[card_id]
+        seq_sorted = np.full((n_samples, self.seq_len), -1, dtype=np.int32)
+        positions = np.arange(n_samples)
+        for lag in range(1, self.seq_len + 1):
+            target_pos = positions[lag:]
+            same_entity = sorted_codes[lag:] == sorted_codes[:-lag]
+            if same_entity.any():
+                seq_sorted[target_pos[same_entity], self.seq_len - lag] = order[target_pos[same_entity] - lag]
 
-            if len(history) >= self.seq_len:
-                sequences[idx] = X[history[-self.seq_len:]]
-            elif len(history) > 0:
-                pad_len = self.seq_len - len(history)
-                sequences[idx, pad_len:] = X[history]
-            # else: all zeros (padding for first transaction)
+        seq_indices = np.empty_like(seq_sorted)
+        seq_indices[order] = seq_sorted
 
-            history.append(idx)
-            if len(history) > 30:  # Keep last 30 for T=10
-                card_history[card_id] = history[-30:]
+        if not (seq_indices >= 0).any():
+            print(f"  View 2 (Sequential): No repeated history; using lazy zero tensor "
+                  f"({n_samples}, {self.seq_len}, {n_features})")
+            return ZeroSequenceArray(n_samples, self.seq_len, n_features)
 
-        print(f"  View 2 (Sequential): Built tensor {sequences.shape} "
-              f"(T={self.seq_len}, {n_features} features per step)")
-        return sequences
+        dense_size_mb = n_samples * self.seq_len * n_features * np.dtype(np.float32).itemsize / (1024 ** 2)
+        index_size_mb = seq_indices.nbytes / (1024 ** 2)
+        if dense_size_mb <= 1024:
+            sequences = np.zeros((n_samples, self.seq_len, n_features), dtype=np.float32)
+            valid = seq_indices >= 0
+            sequences[valid] = X[seq_indices[valid]]
+            print(f"  View 2 (Sequential): Built dense tensor {sequences.shape} "
+                  f"(~{dense_size_mb:.1f} MB)")
+            return sequences
+
+        print(f"  View 2 (Sequential): Built lazy indexed tensor "
+              f"({n_samples}, {self.seq_len}, {n_features}) "
+              f"(index ~{index_size_mb:.1f} MB, avoided dense ~{dense_size_mb:.1f} MB)")
+        return IndexedSequenceArray(X, seq_indices)

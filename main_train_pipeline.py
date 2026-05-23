@@ -329,15 +329,12 @@ def predict_mlp(model, X, device, batch_size=4096):
 
 def predict_lstm(model, X_seq, device, batch_size=4096):
     import torch
-    from torch.utils.data import DataLoader
-    from src.models.nn_lstm import make_sequence_dataset
+    from src.models.nn_lstm import iter_sequence_batches
 
     model.eval()
-    dataset = make_sequence_dataset(X_seq)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     preds = []
     with torch.no_grad():
-        for X_batch, _ in loader:
+        for X_batch, _ in iter_sequence_batches(X_seq, batch_size=batch_size, shuffle=False):
             preds.append(torch.sigmoid(model(X_batch.to(device))).cpu().numpy())
     return np.concatenate(preds).flatten()
 

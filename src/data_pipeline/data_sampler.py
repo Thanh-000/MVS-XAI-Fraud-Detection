@@ -4,12 +4,14 @@ Handles extreme class imbalance (3.5% fraud rate → target 30%).
 """
 import pandas as pd
 import numpy as np
+import os
 
 try:
-    from imblearn.over_sampling import SMOTE, KMeansSMOTE
+    from imblearn.over_sampling import SMOTE, KMeansSMOTE, RandomOverSampler
 except ImportError:
     SMOTE = None
     KMeansSMOTE = None
+    RandomOverSampler = None
 
 try:
     from sdv.single_table import CTGANSynthesizer
@@ -44,6 +46,27 @@ class DataBalanceEngine:
         """
         if KMeansSMOTE is None or SMOTE is None:
             raise ImportError("KMeansSMOTE/SMOTE requires imbalanced-learn: pip install imbalanced-learn")
+
+        n_rows = len(y_train)
+        bincount = np.bincount(y_train)
+        large_threshold = int(os.getenv("MVS_XAI_LARGE_SMOTE_ROWS", "1000000"))
+        large_max_strategy = float(os.getenv("MVS_XAI_LARGE_SMOTE_MAX_STRATEGY", "0.10"))
+        if n_rows >= large_threshold and RandomOverSampler is not None:
+            effective_strategy = min(float(strategy), large_max_strategy)
+            print(
+                f"  Large-data oversampling: RandomOverSampler "
+                f"(strategy={effective_strategy}, rows={n_rows:,}); "
+                "skipping KMeansSMOTE to avoid O(n*k*iter) K-Means cost. "
+                "Override with MVS_XAI_LARGE_SMOTE_MAX_STRATEGY if needed."
+            )
+            sampler = RandomOverSampler(
+                sampling_strategy=effective_strategy,
+                random_state=self.random_state,
+            )
+            X_res, y_res = sampler.fit_resample(X_train, y_train)
+            print(f"    Before: {bincount}")
+            print(f"    After:  {np.bincount(y_res)}")
+            return X_res, y_res
 
         print(f"  KMeansSMOTE (strategy={strategy})...")
         try:

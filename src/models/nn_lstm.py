@@ -47,6 +47,36 @@ def make_sequence_dataset(X_seq, y=None):
     return TensorDataset(X_tensor, y_tensor)
 
 
+def iter_sequence_batches(X_seq, y=None, batch_size=4096, shuffle=False, seed=42):
+    """Yield dense sequence batches without requiring a full dense tensor.
+
+    Indexed/lazy sequence arrays are materialized one batch at a time. This is
+    the main fast path for PaySim-scale runs where (N, T, F) would require many
+    GB of RAM.
+    """
+    n_samples = len(X_seq)
+    if shuffle:
+        rng = np.random.default_rng(seed)
+        indices = rng.permutation(n_samples)
+    else:
+        indices = np.arange(n_samples)
+
+    for start in range(0, n_samples, batch_size):
+        batch_idx = indices[start:start + batch_size]
+        if getattr(X_seq, "is_zero_sequence", False):
+            X_batch = np.zeros((len(batch_idx), X_seq.shape[1], X_seq.shape[2]), dtype=np.float32)
+        elif getattr(X_seq, "is_indexed_sequence", False):
+            X_batch = X_seq.get_batch(batch_idx)
+        else:
+            X_batch = X_seq[batch_idx]
+
+        if y is None:
+            y_batch = np.zeros(len(batch_idx), dtype=np.float32)
+        else:
+            y_batch = np.asarray(y, dtype=np.float32)[batch_idx]
+        yield torch.as_tensor(X_batch, dtype=torch.float32), torch.as_tensor(y_batch, dtype=torch.float32)
+
+
 class FocalLoss(nn.Module):
     """Focal Loss for sequential fraud detection.
     Shared implementation with BehavioralMLP for consistency.
@@ -113,13 +143,6 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
     criterion = FocalLoss(alpha=0.75, gamma=2.0)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    train_ds = make_sequence_dataset(X_seq_trn, y_trn)
-    generator = torch.Generator(device="cpu")
-    generator.manual_seed(seed)
-    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, generator=generator)
-
-    val_ds_eval = make_sequence_dataset(X_seq_val, y_val)
-
     best_val_loss = float('inf')
     best_ep = 0
     best_state = None
@@ -127,7 +150,9 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
     for ep in range(epochs):
         # --- Training ---
         model.train()
-        for X_b, y_b in loader:
+        for X_b, y_b in iter_sequence_batches(
+            X_seq_trn, y_trn, batch_size=batch_size, shuffle=True, seed=seed + ep
+        ):
             X_b, y_b = X_b.to(device), y_b.to(device)
             optimizer.zero_grad()
             loss = criterion(model(X_b), y_b.unsqueeze(1))
@@ -137,12 +162,13 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
         # --- Best-state tracking (NO early stopping) ---
         model.eval()
         with torch.no_grad():
-            val_loader_tmp = DataLoader(val_ds_eval, batch_size=batch_size, shuffle=False)
             val_loss = 0
-            for X_b, y_b in val_loader_tmp:
+            n_val_batches = 0
+            for X_b, y_b in iter_sequence_batches(X_seq_val, y_val, batch_size=batch_size, shuffle=False):
                 X_b, y_b = X_b.to(device), y_b.to(device)
                 val_loss += criterion(model(X_b), y_b.unsqueeze(1)).item()
-            val_loss /= len(val_loader_tmp)
+                n_val_batches += 1
+            val_loss /= max(n_val_batches, 1)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -156,11 +182,9 @@ def train_lstm_fold(X_seq_trn, y_trn, X_seq_val, y_val, n_features, device,
 
     # --- Predict validation set ---
     model.eval()
-    val_ds = make_sequence_dataset(X_seq_val)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
     preds = []
     with torch.no_grad():
-        for X_b, _ in val_loader:
+        for X_b, _ in iter_sequence_batches(X_seq_val, batch_size=batch_size, shuffle=False):
             preds.append(torch.sigmoid(model(X_b.to(device))).cpu().numpy())
 
     return np.concatenate(preds).flatten(), model
